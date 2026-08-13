@@ -1,0 +1,26 @@
+{
+  "gcp_project": "aramco-finance-poc-c2a4",
+  "log_level": "INFO",
+  "write_disposition": "WRITE_TRUNCATE",
+
+  "input_path": "",
+  "input_prefix": "gs://aramco-finance-poc-raw-landing/affiliate_trial_balance/",
+  "input_file_pattern": "*.xlsx",
+
+  "bq_targets": {
+    "trial_balance": "aramco-finance-poc-c2a4.bronze.bronze_trial_balance_raw",
+    "dim_affiliate": "aramco-finance-poc-c2a4.silver.dim_affiliate",
+    "fact_trial_balance": "aramco-finance-poc-c2a4.silver.fact_trial_balance"
+  },
+  "sheet_keywords": ["aramco", "sabic", "petro"],
+  "start_row": 0,
+  "account_column": 0,
+  "account_name_column": 1,
+  "type_column": 2,
+  "category_column": 3,
+  "period_start_column": 4,
+  "affiliate_mapping": {
+    "Sabic": "2010",
+    "Petro": "2380"
+  }
+}
