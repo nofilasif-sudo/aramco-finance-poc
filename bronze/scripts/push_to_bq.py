@@ -10,6 +10,11 @@ touches the cloud for that table. If a control total or nil-proof fails,
 nothing is uploaded and nothing is loaded for that table — but the other
 table still runs, so one bad workbook doesn't block the whole pack.
 
+The rendered CSV never touches local disk: it is either uploaded straight
+from memory to GCS (if BUCKET is set) or streamed straight from memory
+into the BigQuery load job (if not). No outputs/*.csv is written by this
+script.
+
 Reuses the same (name, module, config file) registry as `python -m
 bronze_ingest`, so the two entry points can never define a different set of
 tables or configs.
@@ -201,25 +206,14 @@ def push_one(client, name: str, module, config_file: str, args) -> bool:
         return False
 
     csv_text = to_csv_text(columns, rows)
-    local_csv = cfg["output_dir"] / cfg["output_file"]
-    local_csv.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        local_csv.write_text(csv_text, encoding="utf-8", newline="")
-    except PermissionError:
-        # Windows locks a file that Excel has open. Worth catching by name:
-        # the raw traceback points at pathlib and reads like a bug in the
-        # pipeline rather than a spreadsheet someone left open.
-        print(f"\nFAILED: cannot write {local_csv} — it is open in another "
-              f"program (Excel locks the file). Close it and re-run.",
-              file=sys.stderr)
-        return False
-    print(f"    {len(rows)} rows, {len(csv_text):,} bytes -> {local_csv}")
+    print(f"    {len(rows)} rows, {len(csv_text):,} bytes (in memory, "
+          f"no local file written)")
 
     # 2. Connect. Location is read from the existing dataset, not guessed.
     location = cloud.dataset_location(client, f"{PROJECT}.{DATASET}",
                                       DEFAULT_LOCATION)
     print(f"[2/4] target   {table_id}  (location {location})")
-    print(f"           via {'gs://' + BUCKET + '/' + CSV_BLOB_DIR if BUCKET else 'direct local upload'}")
+    print(f"           via {'gs://' + BUCKET + '/' + CSV_BLOB_DIR if BUCKET else 'direct in-memory load'}")
 
     if args.check:
         print("--check: connected and reconciled. Nothing written.")
@@ -235,8 +229,8 @@ def push_one(client, name: str, module, config_file: str, args) -> bool:
         job = cloud.load_csv_from_gcs(client, uri, table_id, location,
                                       columns, descriptions)
     else:
-        job = cloud.load_csv_from_file(client, local_csv, table_id, location,
-                                       columns, descriptions)
+        job = cloud.load_csv_from_memory(client, csv_text, table_id, location,
+                                         columns, descriptions)
     print(f"    loaded {job.output_rows} rows")
     if job.output_rows != len(rows):
         print(f"\nFAILED: loaded {job.output_rows}, extracted {len(rows)}",

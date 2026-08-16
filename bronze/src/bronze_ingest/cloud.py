@@ -418,16 +418,18 @@ def load_csv_from_gcs(client, gcs_uri: str, table_id: str, location: str,
     return job
 
 
-def load_csv_from_file(client, path, table_id: str, location: str,
-                       columns: list[str], descriptions: dict):
-    """Load straight from a local file — no bucket required.
+def load_csv_from_memory(client, csv_text: str, table_id: str, location: str,
+                         columns: list[str], descriptions: dict):
+    """Load straight from an in-memory CSV string — no local file, no bucket.
 
-    Useful when GCS is not provisioned yet. It skips the lineage artifact,
-    so prefer the GCS path once a bucket exists.
+    csv_text never touches disk: it is encoded straight into a BytesIO
+    buffer and streamed to the load job. Useful when GCS is not
+    provisioned yet; prefer the GCS path (load_csv_from_gcs) once a bucket
+    exists, since that also gives you a lineage artifact.
     """
-    with open(path, "rb") as f:
-        job = client.load_table_from_file(
-            f, table_id, job_config=_load_config(columns, descriptions),
-            location=location)
+    buf = io.BytesIO(csv_text.encode("utf-8"))
+    job = client.load_table_from_file(
+        buf, table_id, job_config=_load_config(columns, descriptions),
+        location=location)
     job.result()
     return job
