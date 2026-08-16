@@ -221,9 +221,10 @@ def push_one(client, name: str, module, config_file: str, args) -> bool:
         print("--check: connected and reconciled. Nothing written.")
         return True
 
-    # 3. Create if absent, then load.
-    cloud.ensure_table(client, table_id, location, columns, descriptions,
-                       spec["table_description"])
+    # 3. Apply the fixed DDL (CREATE TABLE IF NOT EXISTS, no-op if it
+    # already exists), then load.
+    ddl_path = ROOT / "sql" / f"{name}.sql"
+    cloud.ensure_table(client, table_id, location, ddl_path)
     print("[3/4] load")
     if BUCKET:
         uri = cloud.upload_csv(csv_text, f"gs://{BUCKET}/{CSV_BLOB_DIR}/{name}.csv")

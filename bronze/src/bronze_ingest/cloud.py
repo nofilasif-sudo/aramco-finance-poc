@@ -12,6 +12,13 @@ Generalized from a single CoA-only schema to a registry (BRONZE_TABLES) so
 the same bq_schema()/ensure_table()/load helpers serve every bronze table
 this package owns instead of being re-hardcoded per table.
 
+Table CREATION is DDL-first: ensure_table() executes the fixed CREATE
+TABLE IF NOT EXISTS statement in sql/<table>.sql — those files are the
+schema's source of truth, not this module. BRONZE_TABLES' columns/
+descriptions here still drive the LOAD job's schema (must stay in the same
+column order as the matching .sql file) and the local CSV header order —
+keep both in sync by hand when a column changes.
+
 Affiliate trial balance (bronze_tb_raw) is owned by another developer and
 is not defined here. Everything else — coa, group_tb, ifrs standard/rubric,
 entity context, checklist — is owned by this package.
@@ -20,6 +27,7 @@ entity context, checklist — is owned by this package.
 from __future__ import annotations
 
 import io
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # source_file — the row-level lineage column every bronze table carries.
@@ -338,45 +346,28 @@ def dataset_location(client, dataset_id: str, default: str) -> str:
         return default
 
 
-def ensure_table(client, table_id: str, location: str, columns: list[str],
-                 descriptions: dict, table_description: str) -> None:
-    """Create the dataset and table if absent. Never drops data or columns.
+def ensure_table(client, table_id: str, location: str, ddl_path) -> None:
+    """Create the dataset and table from a FIXED DDL file. Never drops data.
 
-    CREATE-IF-NOT-EXISTS semantics separate schema management from data
-    management: re-running this is always safe, and only the load replaces
-    rows.
-
-    If the table already exists, its schema is evolved ADDITIVELY ONLY: any
-    column present in `columns` but missing from the deployed table (e.g.
-    source_file, added to every bronze table after bronze_coa_raw had
-    already been created and loaded once) is appended. Existing columns are
-    never renamed, retyped, or dropped — a real contract change still has to
-    be a deliberate migration, not something this function does for you.
-    Without this, a load job whose schema has grown since the table was
-    created fails outright with a schema-mismatch error instead of loading.
+    The .sql file at ddl_path (e.g. sql/bronze_coa_raw.sql) is the schema's
+    source of truth — it is executed verbatim via CREATE TABLE IF NOT
+    EXISTS, so re-running this is always safe and only the load replaces
+    rows. Python no longer builds or evolves the schema: to add, rename, or
+    retype a column, edit the .sql file directly. CREATE TABLE IF NOT
+    EXISTS is a no-op against an existing table, so a real schema change on
+    an already-created table needs an explicit ALTER TABLE statement added
+    to the same file (see silver/sql/silver_build.sql for the pattern) —
+    this function will not silently evolve a live table's schema for you.
     """
     from google.cloud import bigquery
-    from google.cloud.exceptions import NotFound
 
     project, dataset, table = table_id.split(".")
     ds = bigquery.Dataset(f"{project}.{dataset}")
     ds.location = location
     client.create_dataset(ds, exists_ok=True)
 
-    desired_schema = bq_schema(columns, descriptions)
-    try:
-        existing = client.get_table(table_id)
-    except NotFound:
-        tbl = bigquery.Table(table_id, schema=desired_schema)
-        tbl.description = table_description
-        client.create_table(tbl)
-        return
-
-    existing_names = {f.name for f in existing.schema}
-    missing = [f for f in desired_schema if f.name not in existing_names]
-    if missing:
-        existing.schema = [*existing.schema, *missing]
-        client.update_table(existing, ["schema"])
+    ddl_sql = Path(ddl_path).read_text(encoding="utf-8")
+    client.query(ddl_sql, location=location).result()
 
 
 def _load_config(columns: list[str], descriptions: dict):
