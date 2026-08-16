@@ -11,79 +11,25 @@
 -- silver_coa.sql (superseded by this file) now that silver is being fed
 -- incrementally rather than rebuilt from scratch each run.
 --
--- dim_entity, dim_period, dim_account, dim_group_account and
--- map_account_to_group ALREADY EXIST in BigQuery — no CREATE TABLE for
--- those, MERGE only. fact_group_trial_balance, dim_ifrs_requirement and
--- dim_required_document are genuinely new, so they get CREATE TABLE IF
--- NOT EXISTS ahead of their MERGE.
+-- dim_account, dim_group_account and map_account_to_group ALREADY EXIST in
+-- BigQuery — no CREATE TABLE for those, MERGE only. fact_group_trial_balance,
+-- dim_ifrs_requirement and dim_required_document are genuinely new, so they
+-- get CREATE TABLE IF NOT EXISTS ahead of their MERGE.
 --
--- fact_trial_balance is OUT OF SCOPE for this file: it is sourced from
--- bronze_tb_raw (affiliate trial balance), which is owned by another
--- developer's trial_balance/ pipeline — same ownership boundary as
--- excluding bronze_tb_raw itself from this repo's bronze/. Not built,
--- not upserted, not checked here.
+-- fact_trial_balance, dim_entity and dim_period are OUT OF SCOPE for this
+-- file — all three are owned by another developer's trial_balance/
+-- pipeline. dim_entity and dim_period were built here too until it turned
+-- out both pipelines were MERGing into them independently (trial_balance/
+-- writes 2010/2380 to dim_entity and derives dim_period from
+-- bronze_trial_balance_raw; this file used to also add an ARAMCO row and
+-- derive dim_period from bronze_group_tb_raw). Pulled out to avoid two
+-- pipelines silently fighting over the same tables — fact_group_trial_balance
+-- below still JOINs to both as read-only lookups, so it now depends on
+-- trial_balance/ having run first.
 --
 -- map_account_to_group is NOT touched by this file — it is Agent 3's
 -- deliberately-empty output slot, and nothing here produces mapping rows.
 -- ===========================================================================
-
-
--- ---------------------------------------------------------------------------
--- dim_entity — who submitted. Adds Aramco as a third row (is_group = true).
--- Not derived from any sheet — assigned at ingest, per the DBML note.
--- ---------------------------------------------------------------------------
-MERGE `aramco-finance-poc-c2a4.silver.dim_entity` AS tgt
-USING (
-  SELECT * FROM UNNEST([
-    STRUCT('2010'   AS entity_code, 'SABIC'        AS entity_name, '2010' AS ticker, 'consolidated_subsidiary'    AS consolidation_method, FALSE AS is_group),
-    STRUCT('2380'   AS entity_code, 'Petro Rabigh'  AS entity_name, '2380' AS ticker, 'equity_accounted_associate' AS consolidation_method, FALSE AS is_group),
-    STRUCT('ARAMCO' AS entity_code, 'Saudi Aramco'  AS entity_name, CAST(NULL AS STRING) AS ticker, 'parent'      AS consolidation_method, TRUE  AS is_group)
-  ])
-) AS src
-ON tgt.entity_code = src.entity_code
-WHEN MATCHED THEN UPDATE SET
-  entity_name = src.entity_name,
-  ticker = src.ticker,
-  consolidation_method = src.consolidation_method,
-  is_group = src.is_group
-WHEN NOT MATCHED THEN INSERT (entity_code, entity_name, ticker, consolidation_method, is_group)
-VALUES (src.entity_code, src.entity_name, src.ticker, src.consolidation_method, src.is_group);
-
-
--- ---------------------------------------------------------------------------
--- dim_period — when. Sourced from bronze_group_tb_raw's period_label set
--- (identical 9 quarters to bronze_tb_raw — verified in bronze.dbml) rather
--- than from bronze_tb_raw, so this MERGE has no dependency on the
--- deliberately-untouched fact_trial_balance build.
--- ---------------------------------------------------------------------------
-MERGE `aramco-finance-poc-c2a4.silver.dim_period` AS tgt
-USING (
-  WITH parsed AS (
-    SELECT
-      period_label,
-      CAST(REGEXP_EXTRACT(period_label, r'(\d{4})') AS INT64) AS year,
-      CAST(REGEXP_EXTRACT(period_label, r'Q(\d)')   AS INT64) AS quarter
-    FROM (SELECT DISTINCT period_label
-          FROM `aramco-finance-poc-c2a4.bronze.bronze_group_tb_raw`)
-  )
-  SELECT
-    CONCAT(CAST(year AS STRING), 'Q', CAST(quarter AS STRING)) AS period_key,
-    period_label,
-    year,
-    quarter,
-    ROW_NUMBER() OVER (ORDER BY year, quarter) AS sort_order,
-    LAST_DAY(DATE(year, quarter * 3, 1))       AS period_end_date
-  FROM parsed
-) AS src
-ON tgt.period_key = src.period_key
-WHEN MATCHED THEN UPDATE SET
-  period_label = src.period_label,
-  year = src.year,
-  quarter = src.quarter,
-  sort_order = src.sort_order,
-  period_end_date = src.period_end_date
-WHEN NOT MATCHED THEN INSERT (period_key, period_label, year, quarter, sort_order, period_end_date)
-VALUES (src.period_key, src.period_label, src.year, src.quarter, src.sort_order, src.period_end_date);
 
 
 -- ---------------------------------------------------------------------------

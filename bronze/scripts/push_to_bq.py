@@ -1,23 +1,32 @@
-"""Run this package's bronze ingestions locally, then publish each to BigQuery.
+"""Run this package's bronze ingestions, then publish each to BigQuery.
 
     set GOOGLE_APPLICATION_CREDENTIALS=C:\\path\\to\\key.json
     python scripts/push_to_bq.py --check     # connectivity + plan, no writes
-    python scripts/push_to_bq.py             # extract, upload, load, verify
+    python scripts/push_to_bq.py             # create -> load -> verify, all tables
     python scripts/push_to_bq.py --only bronze_coa_raw
 
     # write to a different dataset (e.g. to validate against the existing
     # live bronze tables before ever touching them):
     python scripts/push_to_bq.py --dataset bronze_staging
 
-Order matters, PER TABLE: the extract runs and reconciles BEFORE anything
-touches the cloud for that table. If a control total or nil-proof fails,
-nothing is uploaded and nothing is loaded for that table — but the other
-table still runs, so one bad workbook doesn't block the whole pack.
+Three GLOBAL phases, each covering every table before the next phase
+starts (not interleaved per table) — this is what lets "create bronze
+table" and "run bronze loading pipeline" be pointed at independently:
 
-The rendered CSV never touches local disk: it is either uploaded straight
-from memory to GCS (if BUCKET is set) or streamed straight from memory
-into the BigQuery load job (if not). No outputs/*.csv is written by this
-script.
+  [1/3] CREATE  extract + reconcile each table locally (control total /
+        nil-proof — raises before any cloud call if a table doesn't
+        balance), then apply its fixed DDL (sql/<table>.sql,
+        CREATE TABLE IF NOT EXISTS — idempotent).
+  [2/3] LOAD    load every table that survived phase 1. The rendered CSV
+        never touches local disk: it's either uploaded straight from
+        memory to GCS (if BUCKET is set — a byte-for-byte lineage
+        artifact) then loaded from there, or streamed straight from
+        memory into the load job.
+  [3/3] VERIFY  re-query BigQuery directly for every table that loaded —
+        proves the *loaded table* is right, not just that the CSV was.
+
+A table that fails phase 1 is dropped from phases 2/3 but doesn't stop
+the others — one bad workbook shouldn't block the whole pack.
 
 Reuses the same (name, module, config file) registry as `python -m
 bronze_ingest`, so the two entry points can never define a different set of
@@ -32,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -66,6 +76,22 @@ EXPECTED_ROWS = {
     "bronze_entity_context_raw": 13,
     "bronze_checklist_raw": 14,
 }
+
+
+@dataclass
+class TableState:
+    """Carries one table's state across the create -> load -> verify phases."""
+    name: str
+    table_id: str
+    columns: list[str]
+    descriptions: dict
+    location: str = DEFAULT_LOCATION
+    rows: list = field(default_factory=list)
+    csv_text: str = ""
+    created: bool = False
+    loaded: bool = False
+    ok: bool = True
+    error: str = ""
 
 
 def verify_common(client, table_id: str, table_name: str, expected: int) -> bool:
@@ -176,79 +202,8 @@ def _run_checks(client, checks) -> bool:
     return all_ok
 
 
-def push_one(client, name: str, module, config_file: str, args) -> bool:
-    """Extract + reconcile + (optionally) load + verify one bronze table.
-    Returns True on success. Never raises — a failure here must not stop
-    the other tables in the loop."""
-    print(f"\n=== {name} ===")
-    spec = cloud.BRONZE_TABLES[name]
-    columns, descriptions = spec["columns"], spec["descriptions"]
-    table_id = f"{PROJECT}.{DATASET}.{name}"
-
-    try:
-        cfg = load_config(ROOT / "configs" / config_file)
-    except FileNotFoundError as exc:
-        print(f"[1/4] FAILED: {exc}", file=sys.stderr)
-        return False
-
-    # 1. Extract and reconcile locally. Raises before any cloud call.
-    print(f"[1/4] extract  {Path(cfg['input_path']).name}")
-    report: list[str] = []
-    try:
-        rows, _ = module.extract(cfg["input_path"], cfg, report)
-    except IngestError as exc:
-        for line in report:
-            print("   ", line)
-        print(f"\nFAILED: {exc}", file=sys.stderr)
-        print("Nothing uploaded, nothing loaded.", file=sys.stderr)
-        return False
-    for line in report:
-        print("   ", line)
-
-    expected = EXPECTED_ROWS.get(name)
-    if expected is not None and len(rows) != expected:
-        print(f"\nFAILED: expected {expected} rows, got {len(rows)}",
-              file=sys.stderr)
-        return False
-
-    csv_text = to_csv_text(columns, rows)
-    print(f"    {len(rows)} rows, {len(csv_text):,} bytes (in memory, "
-          f"no local file written)")
-
-    # 2. Connect. Location is read from the existing dataset, not guessed.
-    location = cloud.dataset_location(client, f"{PROJECT}.{DATASET}",
-                                      DEFAULT_LOCATION)
-    print(f"[2/4] target   {table_id}  (location {location})")
-    print(f"           via {'gs://' + BUCKET + '/' + CSV_BLOB_DIR if BUCKET else 'direct in-memory load'}")
-
-    if args.check:
-        print("--check: connected and reconciled. Nothing written.")
-        return True
-
-    # 3. Apply the fixed DDL (CREATE TABLE IF NOT EXISTS, no-op if it
-    # already exists), then load.
-    ddl_path = ROOT / "sql" / f"{name}.sql"
-    cloud.ensure_table(client, table_id, location, ddl_path)
-    print("[3/4] load")
-    if BUCKET:
-        uri = cloud.upload_csv(csv_text, f"gs://{BUCKET}/{CSV_BLOB_DIR}/{name}.csv")
-        print(f"    uploaded {uri}")
-        job = cloud.load_csv_from_gcs(client, uri, table_id, location,
-                                      columns, descriptions)
-    else:
-        job = cloud.load_csv_from_memory(client, csv_text, table_id, location,
-                                         columns, descriptions)
-    print(f"    loaded {job.output_rows} rows")
-    if job.output_rows != len(rows):
-        print(f"\nFAILED: loaded {job.output_rows}, extracted {len(rows)}",
-              file=sys.stderr)
-        return False
-
-    # 4. Re-prove it in BigQuery — "the CSV was right" and "the table is
-    # right" are different claims; the load can lose or mangle data on its
-    # own.
-    print("[4/4] verify")
-    ok = verify_common(client, table_id, name, expected or len(rows))
+def dispatch_verify(client, name: str, table_id: str, expected: int) -> bool:
+    ok = verify_common(client, table_id, name, expected)
     if name == "bronze_coa_raw":
         ok &= verify_coa(client, table_id)
     elif name == "bronze_group_tb_raw":
@@ -266,8 +221,95 @@ def push_one(client, name: str, module, config_file: str, args) -> bool:
         ok &= verify_unique(client, table_id, "context_key")
     elif name == "bronze_checklist_raw":
         ok &= verify_reference(client, table_id, ["item", "document"])
-    print("Done." if ok else "Loaded, but a verification check FAILED.")
     return ok
+
+
+def create_one(client, name: str, module, config_file: str, args) -> TableState:
+    """Phase 1: extract + reconcile locally, then apply the fixed DDL.
+    Never raises — a failure here must not stop the other tables."""
+    print(f"\n=== {name} ===")
+    spec = cloud.BRONZE_TABLES[name]
+    state = TableState(name=name, table_id=f"{PROJECT}.{DATASET}.{name}",
+                       columns=spec["columns"], descriptions=spec["descriptions"])
+
+    try:
+        cfg = load_config(ROOT / "configs" / config_file)
+    except FileNotFoundError as exc:
+        print(f"[1/3] FAILED: {exc}", file=sys.stderr)
+        state.ok, state.error = False, str(exc)
+        return state
+
+    print(f"[1/3] extract  {Path(cfg['input_path']).name}")
+    report: list[str] = []
+    try:
+        state.rows, _ = module.extract(cfg["input_path"], cfg, report)
+    except IngestError as exc:
+        for line in report:
+            print("   ", line)
+        print(f"\nFAILED: {exc}", file=sys.stderr)
+        state.ok, state.error = False, str(exc)
+        return state
+    for line in report:
+        print("   ", line)
+
+    expected = EXPECTED_ROWS.get(name)
+    if expected is not None and len(state.rows) != expected:
+        msg = f"expected {expected} rows, got {len(state.rows)}"
+        print(f"\nFAILED: {msg}", file=sys.stderr)
+        state.ok, state.error = False, msg
+        return state
+
+    state.csv_text = to_csv_text(state.columns, state.rows)
+    print(f"    {len(state.rows)} rows, {len(state.csv_text):,} bytes "
+          f"(in memory, no local file written)")
+
+    state.location = cloud.dataset_location(client, f"{PROJECT}.{DATASET}",
+                                            DEFAULT_LOCATION)
+    print(f"    target {state.table_id}  (location {state.location})")
+
+    if args.check:
+        print("--check: reconciled. DDL/load/verify skipped, nothing written.")
+        return state
+
+    ddl_path = ROOT / "sql" / f"{name}.sql"
+    cloud.ensure_table(client, state.table_id, state.location, ddl_path)
+    state.created = True
+    print(f"    ensured {state.table_id}")
+    return state
+
+
+def load_one(client, state: TableState) -> None:
+    """Phase 2: load one already-created table. Mutates state in place."""
+    print(f"\n=== {state.name} ===")
+    print(f"[2/3] load     via "
+          f"{'gs://' + BUCKET + '/' + CSV_BLOB_DIR if BUCKET else 'direct in-memory load'}")
+    if BUCKET:
+        uri = cloud.upload_csv(state.csv_text,
+                               f"gs://{BUCKET}/{CSV_BLOB_DIR}/{state.name}.csv")
+        print(f"    uploaded {uri}")
+        job = cloud.load_csv_from_gcs(client, uri, state.table_id, state.location,
+                                      state.columns, state.descriptions)
+    else:
+        job = cloud.load_csv_from_memory(client, state.csv_text, state.table_id,
+                                         state.location, state.columns,
+                                         state.descriptions)
+    print(f"    loaded {job.output_rows} rows")
+    if job.output_rows != len(state.rows):
+        msg = f"loaded {job.output_rows}, extracted {len(state.rows)}"
+        print(f"\nFAILED: {msg}", file=sys.stderr)
+        state.ok, state.error = False, msg
+        return
+    state.loaded = True
+
+
+def verify_one(client, state: TableState) -> None:
+    """Phase 3: verify one loaded table. Mutates state in place."""
+    print(f"\n=== {state.name} ===")
+    print("[3/3] verify")
+    expected = EXPECTED_ROWS.get(state.name, len(state.rows))
+    ok = dispatch_verify(client, state.name, state.table_id, expected)
+    print("Done." if ok else "Loaded, but a verification check FAILED.")
+    state.ok = state.ok and ok
 
 
 def main() -> int:
@@ -286,16 +328,32 @@ def main() -> int:
     client = bigquery.Client(project=PROJECT)
 
     only = set(args.only.split(",")) if args.only else None
-    results: dict[str, bool] = {}
-    for name, module, config_file in TABLES:
-        if only and name not in only:
-            continue
-        results[name] = push_one(client, name, module, config_file, args)
+    wanted = [(n, m, c) for n, m, c in TABLES if not only or n in only]
+
+    print(f"[1/3] CREATE — extract, reconcile, apply DDL for {len(wanted)} table(s)")
+    states = {n: create_one(client, n, m, c, args) for n, m, c in wanted}
+
+    if args.check:
+        print("\n=== summary ===")
+        for name, state in states.items():
+            print(f"    [{'OK' if state.ok else 'FAIL'}] {name}")
+        return 0 if all(s.ok for s in states.values()) else 1
+
+    to_load = {n: s for n, s in states.items() if s.ok}
+    print(f"\n[2/3] LOAD — {len(to_load)} table(s) that passed CREATE")
+    for state in to_load.values():
+        load_one(client, state)
+
+    to_verify = {n: s for n, s in to_load.items() if s.loaded}
+    print(f"\n[3/3] VERIFY — {len(to_verify)} table(s) that loaded")
+    for state in to_verify.values():
+        verify_one(client, state)
 
     print("\n=== summary ===")
-    for name, ok in results.items():
-        print(f"    [{'OK' if ok else 'FAIL'}] {name}")
-    return 0 if all(results.values()) else 1
+    for name, state in states.items():
+        print(f"    [{'OK' if state.ok else 'FAIL'}] {name}"
+              + (f"  ({state.error})" if state.error else ""))
+    return 0 if all(s.ok for s in states.values()) else 1
 
 
 if __name__ == "__main__":

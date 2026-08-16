@@ -1,7 +1,7 @@
 """Re-baseline sql/<table>.sql from the live table's current DDL.
 
     python scripts/export_ddl.py              # re-baseline every silver table
-    python scripts/export_ddl.py --only dim_entity
+    python scripts/export_ddl.py --only dim_account
 
 sql/<table>.sql is normally FIXED and hand-maintained — build_silver.py
 applies it, it does not build/derive it (see that script's docstring).
@@ -10,9 +10,10 @@ drifted from the checked-in file (e.g. someone ran a manual ALTER TABLE)
 and you want to pull the new baseline back into the repo for review,
 rather than to keep the files in permanent sync automatically.
 
-TABLES here matches build_silver.py's list minus fact_trial_balance,
-which is out of scope for this package (owned by another developer's
-trial_balance/ pipeline).
+TABLES here matches build_silver.py's list: fact_trial_balance, dim_entity
+and dim_period are all excluded, owned by another developer's
+trial_balance/ pipeline (dim_entity/dim_period are read-only lookups for
+this package, not tables it creates or exports DDL for).
 """
 
 from __future__ import annotations
@@ -28,9 +29,8 @@ PROJECT = "aramco-finance-poc-c2a4"
 DATASET = "silver"
 SQL_DIR = ROOT / "sql"
 
-TABLES = ["dim_entity", "dim_period", "dim_account", "dim_group_account",
-          "fact_group_trial_balance", "dim_ifrs_standard",
-          "dim_ifrs_requirement", "dim_entity_context",
+TABLES = ["dim_account", "dim_group_account", "fact_group_trial_balance",
+          "dim_ifrs_standard", "dim_ifrs_requirement", "dim_entity_context",
           "dim_required_document"]
 
 

@@ -49,33 +49,39 @@ bronze/
 │                                       upload_csv(). BRONZE_TABLES registry maps table
 │                                       name -> (columns, descriptions) for the load job.
 ├── scripts/
-│   ├── push_to_bq.py                  THE cloud entry point: extract -> reconcile ->
-│   │                                   apply DDL -> load -> verify, per table
+│   ├── push_to_bq.py                  THE cloud entry point: 3 global phases —
+│   │                                   create (all tables) -> load (all tables) ->
+│   │                                   verify (all tables)
 │   └── export_ddl.py                  re-baseline sql/*.sql from a live table's schema
 │                                       (rare — DDL is normally hand-edited, not exported)
 └── tests/                             one test file per extractor, stdlib unittest
 ```
 
-**Data flow for one table**, `push_to_bq.py`'s `push_one()`:
+**Data flow**, `push_to_bq.py`'s three phases (`create_one()` / `load_one()` /
+`verify_one()`, each looped over every table before the next phase starts —
+not interleaved per table):
 
-1. **Extract** — `<table>.extract(path, cfg, report)` parses the xlsx/CSV and
-   returns rows in memory, having already verified its own control total or
-   nil-proof (raises `IngestError` before any cloud call if it doesn't
-   balance).
-2. **Render** — `sink.to_csv_text()` turns the rows into CSV text, kept in
-   memory. **Nothing is written to local disk** — no `outputs/` folder from
-   this script.
-3. **Apply DDL** — `cloud.ensure_table()` reads the table's fixed
-   `sql/<table>.sql` and executes `CREATE TABLE IF NOT EXISTS` — idempotent,
-   safe to re-run. This is the schema's only source of truth; nothing here
-   builds or evolves a schema in Python.
-4. **Load** — either uploaded to GCS first (`gs://aramco-finance-poc-raw-landing/staging/<table>.csv`,
+Three GLOBAL phases — every table finishes phase N before phase N+1 starts
+for any table, not interleaved per table:
+
+1. **`[1/3] CREATE`** — for every table: `<table>.extract(path, cfg, report)`
+   parses the xlsx/CSV and returns rows in memory, having already verified
+   its own control total or nil-proof (raises `IngestError` before any
+   cloud call if it doesn't balance); `sink.to_csv_text()` renders the CSV
+   in memory (**nothing touches local disk** — no `outputs/` folder from
+   this script); then `cloud.ensure_table()` applies the table's fixed
+   `sql/<table>.sql` DDL (`CREATE TABLE IF NOT EXISTS` — idempotent, the
+   schema's only source of truth). A table that fails any of this is
+   dropped from the phases below but doesn't stop the others.
+2. **`[2/3] LOAD`** — for every table that survived phase 1: either
+   uploaded to GCS first (`gs://aramco-finance-poc-raw-landing/staging/<table>.csv`,
    a byte-for-byte lineage artifact) then loaded from there, or streamed
    straight from memory into the BigQuery load job — controlled by the
    `BUCKET` setting at the top of `push_to_bq.py`.
-5. **Verify** — table-specific post-load checks re-query BigQuery directly
-   (row counts, no-NULL, uniqueness, referential integrity) — proves the
-   *loaded table* is right, not just that the CSV was right.
+3. **`[3/3] VERIFY`** — for every table that loaded: table-specific
+   post-load checks re-query BigQuery directly (row counts, no-NULL,
+   uniqueness, referential integrity) — proves the *loaded table* is
+   right, not just that the CSV was right.
 
 `excel.py`/`flatcsv.py` and `sink.py` are deliberately domain-agnostic: the
 same parsing/rendering logic serves every table and would serve a new one

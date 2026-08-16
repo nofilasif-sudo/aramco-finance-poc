@@ -53,6 +53,15 @@ class TestTablesList(unittest.TestCase):
         # developer's trial_balance/ pipeline — must never be (re)added here.
         self.assertNotIn("fact_trial_balance", TABLES)
 
+    def test_dim_entity_and_dim_period_excluded(self):
+        # Both are owned/populated by trial_balance/'s pipeline. This
+        # package only reads them (fact_group_trial_balance's MERGE joins
+        # to both) — re-adding them here would resume the silent
+        # double-MERGE (different data from each pipeline) this list was
+        # split out to stop. See silver_build.sql's header comment.
+        self.assertNotIn("dim_entity", TABLES)
+        self.assertNotIn("dim_period", TABLES)
+
     def test_fact_group_trial_balance_included(self):
         # The Group (Aramco parent-only) trial balance IS owned by this
         # package, and is easy to confuse with fact_trial_balance by name.
