@@ -1,0 +1,135 @@
+Table dim_entity {
+  entity_code varchar [pk, note: 'Tadawul ticker for affiliates; ARAMCO for the parent.']
+  entity_name varchar
+  ticker varchar [note: 'Null for ARAMCO.']
+  consolidation_method varchar [note: 'consolidated_subsidiary | equity_accounted_associate | parent.']
+  is_group boolean [note: 'True for ARAMCO only. Aramco here is parent-only, not consolidated.']
+}
+
+Table dim_period {
+  period_key varchar [pk, note: 'Sortable surrogate, e.g. 2024Q1.']
+  period_label varchar [note: 'Raw header string, e.g. 2024 Q1.']
+  year int
+  quarter int
+  sort_order int [note: 'Dense 1..9.']
+  period_end_date date
+}
+
+Table dim_account {
+  entity_code varchar [ref: > dim_entity.entity_code, note: 'PK part 1.']
+  account_code varchar [note: 'PK part 2. Affiliate 4-digit ledger code, unique only within an entity.']
+  account_name varchar
+  statement_type varchar [note: 'BS or PL.']
+  category varchar
+  normal_balance varchar [note: 'Dr or Cr.']
+  code_block varchar [note: 'First digit of account_code, derived.']
+
+  indexes {
+    (entity_code, account_code) [pk]
+  }
+}
+
+Table dim_group_account {
+  group_node varchar [pk, note: 'G-prefixed 5-digit code.']
+  group_name varchar
+  statement varchar
+  category varchar
+  normal_balance varchar
+  level int [note: '1 = face caption, 2 = analytical sub-account.']
+  parent_group_node varchar [ref: > dim_group_account.group_node, note: 'Derived: last two digits of the child code reset to 00.']
+  source_reference varchar
+}
+
+Table fact_trial_balance {
+  entity_code varchar [ref: > dim_entity.entity_code, note: 'PK part 1.']
+  account_code varchar [note: 'PK part 2. Composite FK to dim_account with entity_code — never join on account_code alone.']
+  period_key varchar [ref: > dim_period.period_key, note: 'PK part 3.']
+  ledger_amount decimal [note: 'Signed, proves to nil per entity per period.']
+  presentation_amount decimal [note: 'Sign-flipped for Cr-normal accounts.']
+  currency varchar
+  amount_unit varchar
+  source_file varchar [note: 'Propagated from bronze_tb_raw.']
+
+  indexes {
+    (entity_code, account_code, period_key) [pk]
+  }
+}
+
+Table fact_group_trial_balance {
+  entity_code varchar [ref: > dim_entity.entity_code, note: 'PK part 1. Always ARAMCO today.']
+  group_node varchar [ref: > dim_group_account.group_node, note: 'PK part 2.']
+  period_key varchar [ref: > dim_period.period_key, note: 'PK part 3.']
+  ledger_amount decimal [note: 'Aramco parent-only, proves to nil independently of the affiliate side.']
+  presentation_amount decimal
+  currency varchar
+  amount_unit varchar
+
+  indexes {
+    (entity_code, group_node, period_key) [pk]
+  }
+}
+
+Table dim_ifrs_standard {
+  standard_code varchar [pk, note: 'NEW TABLE. Short stable code: IFRS 15, IAS 24, IAS 16. Chosen as the key over the long title because a title can be revised; the code will not.']
+  standard_title varchar [note: 'Full official title, e.g. IFRS 15 Revenue from Contracts with Customers.']
+  disclosure_summary varchar [note: 'Paragraph summarising the standard disclosure obligations. Held once per standard rather than repeated on each requirement.']
+}
+
+Table dim_ifrs_requirement {
+  standard_code varchar [ref: > dim_ifrs_standard.standard_code, note: 'PK part 1. CHANGED: key moved from the long standard name to the stable code, and now resolves to dim_ifrs_standard. Existing rows were backfilled before the key switch.']
+  req varchar [note: 'PK part 2. R1-R5.']
+  standard varchar [note: 'Full standard name, retained as a descriptive attribute. Kept under its original column name — BigQuery cannot rename a column additively, and an orphaned old column would be worse than an imperfect name.']
+  requirement_text varchar [note: 'The disclosure requirement text.']
+  evidence_type varchar [note: 'NEW. narrative | table_structure | both. Lets the disclosure agent branch on whether to inspect prose or table shape.']
+  check_guidance varchar [note: 'NEW. Explicit rule for what counts as meeting the requirement.']
+
+  indexes {
+    (standard_code, req) [pk]
+  }
+}
+
+Table dim_entity_context {
+  context_key varchar [pk, note: 'NEW TABLE. Metadata key, e.g. reporting_entity, presentation_currency.']
+  context_value varchar [note: 'Free-text value. Narrative reference data an agent reads; never aggregated.']
+}
+
+Table dim_required_document {
+  item varchar [pk]
+  document varchar
+  required varchar
+  applies_to varchar
+  expected_format varchar
+  description varchar
+}
+
+Table map_account_to_group {
+  entity_code varchar [note: 'FK to dim_account (composite).']
+  account_code varchar [note: 'FK to dim_account (composite).']
+  group_node varchar [ref: > dim_group_account.group_node]
+  confidence decimal [note: '0.000-1.000 from the mapping agent.']
+  method varchar [note: 'exact | fuzzy | llm.']
+  rationale varchar
+  mapped_at timestamp
+}
+
+Ref: fact_trial_balance.(entity_code, account_code) > dim_account.(entity_code, account_code)
+Ref: map_account_to_group.(entity_code, account_code) > dim_account.(entity_code, account_code)
+
+TableGroup affiliate_side {
+  dim_entity
+  dim_account
+  dim_period
+  fact_trial_balance
+}
+
+TableGroup group_side {
+  dim_group_account
+  fact_group_trial_balance
+}
+
+TableGroup agent_reference_data {
+  dim_ifrs_standard
+  dim_ifrs_requirement
+  dim_entity_context
+  dim_required_document
+}

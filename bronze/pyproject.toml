@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bronze-ingest"
+version = "0.1.0"
+description = "Aramco FC&RD PoC - chart of accounts to bronze CSV"
+requires-python = ">=3.10"
+dependencies = ["openpyxl>=3.1"]
+
+# Installs a `bronze-ingest` command on PATH that calls main().
+[project.scripts]
+bronze-ingest = "bronze_ingest.__main__:main"
+
+# The src layout: setuptools looks for packages under src/, not the repo root.
+# This is what removes the need for sys.path hacks - after `pip install -e .`
+# the package resolves from anywhere, including notebooks and tests.
+[tool.setuptools.packages.find]
+where = ["src"]

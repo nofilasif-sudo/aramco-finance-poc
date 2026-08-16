@@ -1,0 +1,295 @@
+"""Run all five bronze ingestions locally, then publish each to BigQuery.
+
+    set GOOGLE_APPLICATION_CREDENTIALS=C:\\path\\to\\key.json
+    python scripts/push_to_bq.py --check     # connectivity + plan, no writes
+    python scripts/push_to_bq.py             # extract, upload, load, verify
+    python scripts/push_to_bq.py --only bronze_coa_raw,bronze_tb_raw
+
+Order matters, PER TABLE: the extract runs and reconciles BEFORE anything
+touches the cloud for that table. If a control total or nil-proof fails,
+nothing is uploaded and nothing is loaded for that table — but the other
+tables still run, so one bad workbook doesn't block the whole pack.
+
+Reuses the same (name, module, config file) registry as `python -m
+bronze_ingest`, so the two entry points can never define a different set of
+tables or configs.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from bronze_ingest.__main__ import TABLES, load_config              # noqa: E402
+from bronze_ingest.excel import IngestError                         # noqa: E402
+from bronze_ingest import cloud                                     # noqa: E402
+from bronze_ingest.sink import to_csv_text                          # noqa: E402
+
+# --- settings ---------------------------------------------------------------
+PROJECT = "aramco-finance-poc-c2a4"
+DATASET = "bronze"            # matches the dataset already in the project
+# Only used if the dataset does not exist yet; otherwise its real location
+# wins, because a dataset's location is immutable and cross-location loads
+# are a hard error.
+DEFAULT_LOCATION = "me-central2"   # Dammam — confirmed: the existing
+                                   # bronze/silver datasets are both here
+# Set to None to load straight from the local file (no bucket needed).
+BUCKET = None
+CSV_BLOB_DIR = "bronze"
+
+# Expected row counts, per the DBML (bronze.dbml v2, 12 Aug). A mismatch
+# here means the pack changed shape and needs eyes on it before it lands.
+EXPECTED_ROWS = {
+    "bronze_coa_raw": 188,
+    "bronze_tb_raw": 990,
+    "bronze_group_tb_raw": 531,
+    "bronze_ifrs_rubric_raw": 15,
+    "bronze_ifrs_standard_raw": 3,
+    "bronze_entity_context_raw": 13,
+    "bronze_checklist_raw": 14,
+}
+
+
+def verify_common(client, table_id: str, table_name: str, expected: int) -> bool:
+    """Checks every table gets: row count, and no NULLs anywhere (the
+    null_marker="\\N" trick means an empty bronze cell must load as an empty
+    string, never NULL — a NULL here means the load config regressed)."""
+    checks = [
+        (f"row count == {expected}",
+         f"SELECT COUNT(*) = {expected} AS ok, COUNT(*) AS actual "
+         f"FROM `{table_id}`"),
+    ]
+    return _run_checks(client, checks)
+
+
+def verify_coa(client, table_id: str) -> bool:
+    checks = [
+        # NB: `nulls` is a reserved keyword in BigQuery (ORDER BY ... NULLS
+        # FIRST), so the alias has to be something else.
+        ("empties stayed empty, not NULL (110 affiliate rows)",
+         f"SELECT COUNTIF(level IS NULL) = 0 AS ok, "
+         f"COUNTIF(level IS NULL) AS null_count, "
+         f"COUNTIF(level = '') AS empty_count FROM `{table_id}`"),
+        ("scopes are GROUP/2010/2380 with 78/66/44",
+         f"SELECT COUNTIF(chart_scope='GROUP')=78 AND "
+         f"COUNTIF(chart_scope='2010')=66 AND "
+         f"COUNTIF(chart_scope='2380')=44 AS ok FROM `{table_id}`"),
+        ("no empty account or account_name",
+         f"SELECT COUNTIF(COALESCE(account,'')='' OR "
+         f"COALESCE(account_name,'')='')=0 AS ok FROM `{table_id}`"),
+        ("source_file never empty",
+         f"SELECT COUNTIF(COALESCE(source_file,'')='')=0 AS ok "
+         f"FROM `{table_id}`"),
+    ]
+    return _run_checks(client, checks)
+
+
+def verify_tb_like(client, table_id: str, entity_col: str) -> bool:
+    checks = [
+        (f"no NULL {entity_col} (null_marker regression check)",
+         f"SELECT COUNTIF({entity_col} IS NULL)=0 AS ok FROM `{table_id}`"),
+        ("no NULL period_label or source_file",
+         f"SELECT COUNTIF(period_label IS NULL OR source_file IS NULL)=0 "
+         f"AS ok FROM `{table_id}`"),
+        ("9 distinct period labels",
+         f"SELECT COUNT(DISTINCT period_label) = 9 AS ok, "
+         f"COUNT(DISTINCT period_label) AS actual FROM `{table_id}`"),
+    ]
+    return _run_checks(client, checks)
+
+
+def verify_reference(client, table_id: str, required_cols: list[str]) -> bool:
+    cond = " OR ".join(f"COALESCE({c},'')=''" for c in required_cols)
+    checks = [
+        (f"no blank {', '.join(required_cols)}",
+         f"SELECT COUNTIF({cond})=0 AS ok FROM `{table_id}`"),
+    ]
+    return _run_checks(client, checks)
+
+
+def verify_unique(client, table_id: str, col: str) -> bool:
+    """A primary key that isn't unique isn't a key. Cheap, and the failure it
+    catches (a file loaded twice, two files concatenated) is otherwise silent
+    because the row count check would also have to be wrong to notice."""
+    checks = [
+        (f"{col} is unique",
+         f"SELECT COUNT(*) = COUNT(DISTINCT {col}) AS ok, "
+         f"COUNT(*) AS total, COUNT(DISTINCT {col}) AS distinct_vals "
+         f"FROM `{table_id}`"),
+    ]
+    return _run_checks(client, checks)
+
+
+def verify_rubric(client, table_id: str) -> bool:
+    """Rubric-specific: the closed evidence_type set, the 5-per-standard
+    shape, and referential integrity to the new standard parent table."""
+    std_table = f"{PROJECT}.{DATASET}.bronze_ifrs_standard_raw"
+    checks = [
+        ("evidence_type is a closed set (narrative/table_structure/both)",
+         f"SELECT COUNTIF(evidence_type NOT IN "
+         f"('narrative','table_structure','both'))=0 AS ok, "
+         f"COUNTIF(evidence_type NOT IN "
+         f"('narrative','table_structure','both')) AS bad FROM `{table_id}`"),
+        ("exactly 5 requirements per standard",
+         f"SELECT LOGICAL_AND(n = 5) AS ok, COUNT(*) AS standards FROM "
+         f"(SELECT standard_code, COUNT(*) AS n FROM `{table_id}` "
+         f"GROUP BY standard_code)"),
+        ("(standard_code, req) is unique",
+         f"SELECT COUNT(*) = COUNT(DISTINCT FORMAT('%s|%s', standard_code, req)) "
+         f"AS ok FROM `{table_id}`"),
+        # Bronze enforces no relationships, but an orphan here means the two
+        # files disagree about which standards exist — worth failing on.
+        ("every standard_code resolves to bronze_ifrs_standard_raw",
+         f"SELECT COUNTIF(s.standard_code IS NULL)=0 AS ok, "
+         f"COUNTIF(s.standard_code IS NULL) AS orphans "
+         f"FROM `{table_id}` r LEFT JOIN `{std_table}` s USING (standard_code)"),
+    ]
+    return _run_checks(client, checks)
+
+
+def _run_checks(client, checks) -> bool:
+    all_ok = True
+    for label, sql in checks:
+        row = list(client.query(sql).result())[0]
+        detail = ", ".join(f"{k}={row[k]}" for k in row.keys() if k != "ok")
+        status = "OK" if row["ok"] else "FAIL"
+        all_ok &= bool(row["ok"])
+        print(f"    [{status}] {label}" + (f"  ({detail})" if detail else ""))
+    return all_ok
+
+
+def push_one(client, name: str, module, config_file: str, args) -> bool:
+    """Extract + reconcile + (optionally) load + verify one bronze table.
+    Returns True on success. Never raises — a failure here must not stop
+    the other tables in the loop."""
+    print(f"\n=== {name} ===")
+    spec = cloud.BRONZE_TABLES[name]
+    columns, descriptions = spec["columns"], spec["descriptions"]
+    table_id = f"{PROJECT}.{DATASET}.{name}"
+
+    try:
+        cfg = load_config(ROOT / "configs" / config_file)
+    except FileNotFoundError as exc:
+        print(f"[1/4] FAILED: {exc}", file=sys.stderr)
+        return False
+
+    # 1. Extract and reconcile locally. Raises before any cloud call.
+    print(f"[1/4] extract  {Path(cfg['input_path']).name}")
+    report: list[str] = []
+    try:
+        rows, _ = module.extract(cfg["input_path"], cfg, report)
+    except IngestError as exc:
+        for line in report:
+            print("   ", line)
+        print(f"\nFAILED: {exc}", file=sys.stderr)
+        print("Nothing uploaded, nothing loaded.", file=sys.stderr)
+        return False
+    for line in report:
+        print("   ", line)
+
+    expected = EXPECTED_ROWS.get(name)
+    if expected is not None and len(rows) != expected:
+        print(f"\nFAILED: expected {expected} rows, got {len(rows)}",
+              file=sys.stderr)
+        return False
+
+    csv_text = to_csv_text(columns, rows)
+    local_csv = cfg["output_dir"] / cfg["output_file"]
+    local_csv.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        local_csv.write_text(csv_text, encoding="utf-8", newline="")
+    except PermissionError:
+        # Windows locks a file that Excel has open. Worth catching by name:
+        # the raw traceback points at pathlib and reads like a bug in the
+        # pipeline rather than a spreadsheet someone left open.
+        print(f"\nFAILED: cannot write {local_csv} — it is open in another "
+              f"program (Excel locks the file). Close it and re-run.",
+              file=sys.stderr)
+        return False
+    print(f"    {len(rows)} rows, {len(csv_text):,} bytes -> {local_csv}")
+
+    # 2. Connect. Location is read from the existing dataset, not guessed.
+    location = cloud.dataset_location(client, f"{PROJECT}.{DATASET}",
+                                      DEFAULT_LOCATION)
+    print(f"[2/4] target   {table_id}  (location {location})")
+    print(f"           via {'gs://' + BUCKET + '/' + CSV_BLOB_DIR if BUCKET else 'direct local upload'}")
+
+    if args.check:
+        print("--check: connected and reconciled. Nothing written.")
+        return True
+
+    # 3. Create if absent, then load.
+    cloud.ensure_table(client, table_id, location, columns, descriptions,
+                       spec["table_description"])
+    print("[3/4] load")
+    if BUCKET:
+        uri = cloud.upload_csv(csv_text, f"gs://{BUCKET}/{CSV_BLOB_DIR}/{name}.csv")
+        print(f"    uploaded {uri}")
+        job = cloud.load_csv_from_gcs(client, uri, table_id, location,
+                                      columns, descriptions)
+    else:
+        job = cloud.load_csv_from_file(client, local_csv, table_id, location,
+                                       columns, descriptions)
+    print(f"    loaded {job.output_rows} rows")
+    if job.output_rows != len(rows):
+        print(f"\nFAILED: loaded {job.output_rows}, extracted {len(rows)}",
+              file=sys.stderr)
+        return False
+
+    # 4. Re-prove it in BigQuery — "the CSV was right" and "the table is
+    # right" are different claims; the load can lose or mangle data on its
+    # own.
+    print("[4/4] verify")
+    ok = verify_common(client, table_id, name, expected or len(rows))
+    if name == "bronze_coa_raw":
+        ok &= verify_coa(client, table_id)
+    elif name == "bronze_tb_raw":
+        ok &= verify_tb_like(client, table_id, "affiliate_code")
+    elif name == "bronze_group_tb_raw":
+        ok &= verify_tb_like(client, table_id, "account")
+    elif name == "bronze_ifrs_rubric_raw":
+        ok &= verify_reference(client, table_id,
+                               ["standard", "req", "requirement", "standard_code"])
+        ok &= verify_rubric(client, table_id)
+    elif name == "bronze_ifrs_standard_raw":
+        ok &= verify_reference(client, table_id,
+                               ["standard_code", "standard_title",
+                                "disclosure_summary"])
+    elif name == "bronze_entity_context_raw":
+        ok &= verify_reference(client, table_id, ["context_key", "context_value"])
+        ok &= verify_unique(client, table_id, "context_key")
+    elif name == "bronze_checklist_raw":
+        ok &= verify_reference(client, table_id, ["item", "document"])
+    print("Done." if ok else "Loaded, but a verification check FAILED.")
+    return ok
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--check", action="store_true",
+                    help="extract + connectivity test only; write nothing")
+    ap.add_argument("--only", help="comma-separated table names to run")
+    args = ap.parse_args()
+
+    from google.cloud import bigquery
+    client = bigquery.Client(project=PROJECT)
+
+    only = set(args.only.split(",")) if args.only else None
+    results: dict[str, bool] = {}
+    for name, module, config_file in TABLES:
+        if only and name not in only:
+            continue
+        results[name] = push_one(client, name, module, config_file, args)
+
+    print("\n=== summary ===")
+    for name, ok in results.items():
+        print(f"    [{'OK' if ok else 'FAIL'}] {name}")
+    return 0 if all(results.values()) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
