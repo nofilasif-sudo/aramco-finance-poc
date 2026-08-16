@@ -17,8 +17,8 @@ pip install -e .
 # put the workbook where the config expects it
 mkdir data && copy PoC_Charts_of_Accounts.xlsx data\
 
-python -m unittest discover -s tests    # 36 tests, no pytest needed
-python -m bronze_ingest                 # writes all 5 bronze CSVs to outputs/
+python -m unittest discover -s tests    # no pytest needed
+python -m bronze_ingest                 # writes bronze_coa_raw + bronze_checklist_raw to outputs/
 python -m bronze_ingest --only bronze_coa_raw   # just one table
 ```
 
@@ -56,21 +56,24 @@ bronze_ingestion/
 ├── src/
 │   └── bronze_ingest/
 │       ├── __init__.py      makes this an importable package
-│       ├── __main__.py      thin CLI; `python -m bronze_ingest` runs all 5 tables
+│       ├── __main__.py      thin CLI; `python -m bronze_ingest` runs this package's tables
 │       ├── excel.py         generic worksheet parsing — knows nothing of any bronze table
 │       ├── sink.py          shared CSV writer — knows nothing of any bronze table either
 │       ├── coa.py           bronze_coa_raw   — 3 chart tabs stacked
-│       ├── tb.py            bronze_tb_raw    — affiliate trial balances, unpivoted
-│       ├── group_tb.py      bronze_group_tb_raw — Aramco (parent-only) trial balance, unpivoted
-│       ├── ifrs_rubric.py   bronze_ifrs_rubric_raw — IFRS disclosure requirements
 │       ├── checklist.py     bronze_checklist_raw — required submission documents
 │       └── cloud.py         GCS + BigQuery adapters, one registry entry per table
 └── tests/                   one test file per extractor, stdlib unittest
 ```
 
-`excel.py` and `sink.py` are separate from the five table modules because
-they are genuinely domain-agnostic — the same header-discovery, melt, and
-CSV-writing logic serves all five tables and would serve a sixth source
+Trial balance (`bronze_tb_raw`, `bronze_group_tb_raw`) is owned by another
+developer — see `trial_balance/` at the repo root. The CSV-sourced tables
+(`bronze_ifrs_standard_raw`, `bronze_ifrs_rubric_raw`,
+`bronze_entity_context_raw`) are likewise ingested elsewhere and are not
+part of this package.
+
+`excel.py` and `sink.py` are separate from the table modules because they
+are genuinely domain-agnostic — the same header-discovery, melt, and
+CSV-writing logic serves both tables and would serve another xlsx source
 unchanged. Each table module owns its own schema, aliases, and
 fail-closed checks; nothing about a specific workbook lives in `excel.py`.
 

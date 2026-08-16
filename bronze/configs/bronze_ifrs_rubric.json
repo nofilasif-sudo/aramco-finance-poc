@@ -1,8 +1,0 @@
-{
-  "input_path": "data/ifrs_requirements_updated.csv",
-  "output_dir": "outputs",
-  "output_file": "bronze_ifrs_rubric_raw.csv",
-
-  "csv_read_encoding": "utf-8-sig",
-  "csv_encoding": "utf-8"
-}

@@ -1,8 +1,0 @@
-{
-  "input_path": "data/ifrs_standard_context.csv",
-  "output_dir": "outputs",
-  "output_file": "bronze_ifrs_standard_raw.csv",
-
-  "csv_read_encoding": "utf-8-sig",
-  "csv_encoding": "utf-8"
-}

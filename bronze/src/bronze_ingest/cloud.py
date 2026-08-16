@@ -9,8 +9,11 @@ The cloud libraries are imported INSIDE the functions on purpose: the package
 must stay importable and testable on a machine with no GCP SDK.
 
 Generalized from a single CoA-only schema to a registry (BRONZE_TABLES) so
-the same bq_schema()/ensure_table()/load helpers serve all five bronze
-tables instead of being re-hardcoded per table.
+the same bq_schema()/ensure_table()/load helpers serve every bronze table
+this package owns instead of being re-hardcoded per table.
+
+Trial balance and the CSV-sourced tables (ifrs standard/rubric, entity
+context) are ingested elsewhere and are not defined here.
 """
 
 from __future__ import annotations
@@ -79,120 +82,6 @@ _COA_COLUMNS, _COA_DESCRIPTIONS = with_source_file(
     },
 )
 
-_TB_COLUMNS, _TB_DESCRIPTIONS = with_source_file(
-    ["affiliate_code", "account", "account_name", "type", "category",
-     "period_label", "amount"],
-    {
-        "affiliate_code":
-            "2010 (SABIC) or 2380 (Petro Rabigh). ADDED AT INGEST from the tab "
-            "name — not a column in the sheet.",
-        "account":
-            "4-digit affiliate ledger code. Empty on section-divider and "
-            "subtotal rows — those rows carry a value in account_name instead.",
-        "account_name":
-            "Account description, or the section/subtotal caption on rows "
-            "where account is empty. Leading spaces preserved.",
-        "type":
-            "BS or PL. Null on section-header rows.",
-        "category":
-            "FS caption group, matching bronze_coa_raw.category for the same "
-            "affiliate.",
-        "period_label":
-            "Raw header string, e.g. '2024 Q1'. ADDED AT INGEST by unpivoting "
-            "the sheet's quarter columns — not parsed into year/quarter here, "
-            "silver does that.",
-        "amount":
-            "Signed balance for this account and period, kept as text — no "
-            "casting in bronze. Debit-positive, credit-negative.",
-    },
-)
-
-_GROUP_TB_COLUMNS, _GROUP_TB_DESCRIPTIONS = with_source_file(
-    ["account", "group_node", "type", "category", "period_label", "amount"],
-    {
-        "account":
-            "The G-prefixed 5-digit Group node code, e.g. 'G11000'. Section "
-            "header rows land here too.",
-        "group_node":
-            "The Group node NAME, e.g. 'Property, plant & equipment (net)'. "
-            "EXTRA COLUMN vs bronze_tb_raw — this sheet carries both the code "
-            "(in `account`) and the name (here); silver decides what to do "
-            "with them.",
-        "type":
-            "LONG FORM here — 'Balance sheet' / 'Income statement' — NOT the "
-            "affiliate TB's BS/PL abbreviations for the same concept. Bronze "
-            "does not harmonise vocabularies across sources.",
-        "category":
-            "FS caption group.",
-        "period_label":
-            "Raw header string, e.g. '2024 Q1'. Same 9 quarters as "
-            "bronze_tb_raw.",
-        "amount":
-            "Signed balance for this node and period, kept as text. Aramco "
-            "GROUP CORE OPERATIONS ONLY — no affiliates in this figure.",
-    },
-)
-
-_IFRS_RUBRIC_COLUMNS, _IFRS_RUBRIC_DESCRIPTIONS = with_source_file(
-    ["standard", "req", "requirement", "standard_code", "evidence_type",
-     "check_guidance"],
-    {
-        "standard":
-            "The IFRS/IAS standard's full name, e.g. 'IFRS 15 Revenue', "
-            "'IAS 24 Related party', 'IAS 16 PP&E'. A descriptive attribute — "
-            "join on standard_code, not on this.",
-        "req":
-            "Requirement code within the standard, R1..R5.",
-        "requirement":
-            "The disclosure requirement text. Agent 4 (Disclosure Drafting) "
-            "reference data — this is what a note is scored AGAINST, not "
-            "financial data itself.",
-        "standard_code":
-            "Short stable code for the standard: 'IFRS 15', 'IAS 24', "
-            "'IAS 16'. Joins to bronze_ifrs_standard_raw.standard_code. "
-            "Preferred over the full name as a key because a standard can be "
-            "retitled but its code will not change.",
-        "evidence_type":
-            "What kind of evidence satisfies this requirement: 'narrative' "
-            "(prose in the note), 'table_structure' (the shape of a table), "
-            "or 'both'. Lets the disclosure agent decide whether to inspect "
-            "wording or table columns.",
-        "check_guidance":
-            "The explicit rule for what counts as meeting this requirement, "
-            "e.g. 'Revenue table must break down revenue into product "
-            "categories, not only a total.' This is what makes the rubric "
-            "machine-actionable rather than just a list of topics.",
-    },
-)
-
-_IFRS_STANDARD_COLUMNS, _IFRS_STANDARD_DESCRIPTIONS = with_source_file(
-    ["standard_code", "standard_title", "disclosure_summary"],
-    {
-        "standard_code":
-            "Short stable code: 'IFRS 15', 'IAS 24', 'IAS 16'. Primary key, "
-            "and the value bronze_ifrs_rubric_raw.standard_code joins to.",
-        "standard_title":
-            "Full official title, e.g. 'IFRS 15 Revenue from Contracts with "
-            "Customers'.",
-        "disclosure_summary":
-            "Paragraph summarising what the standard requires to be "
-            "disclosed. Held once per standard rather than repeated across "
-            "its five requirement rows.",
-    },
-)
-
-_ENTITY_CONTEXT_COLUMNS, _ENTITY_CONTEXT_DESCRIPTIONS = with_source_file(
-    ["context_key", "context_value"],
-    {
-        "context_key":
-            "Metadata key, e.g. 'reporting_entity', 'presentation_currency', "
-            "'reportable_segments', 'negative_convention'. Primary key.",
-        "context_value":
-            "Free-text value. Narrative reference an agent reads to ground a "
-            "disclosure or interpret a figure — never aggregated, never cast.",
-    },
-)
-
 _CHECKLIST_COLUMNS, _CHECKLIST_DESCRIPTIONS = with_source_file(
     ["item", "document", "required", "applies_to", "expected_format",
      "description"],
@@ -216,9 +105,9 @@ _CHECKLIST_COLUMNS, _CHECKLIST_DESCRIPTIONS = with_source_file(
 )
 
 # Table name -> (columns, descriptions, table description). One entry per
-# bronze table — the local CLI, push_to_bq.py and this module's own
-# bq_schema()/ensure_table() all key off this registry instead of each
-# hardcoding a schema.
+# bronze table this package owns — the local CLI, push_to_bq.py and this
+# module's own bq_schema()/ensure_table() all key off this registry instead
+# of each hardcoding a schema.
 BRONZE_TABLES = {
     "bronze_coa_raw": {
         "columns": _COA_COLUMNS,
@@ -234,73 +123,6 @@ BRONZE_TABLES = {
             "affiliate-to-Group mapping does not exist in this pack — it is "
             "Agent 3's output, produced with a confidence score, not an input. "
             "SYNTHETIC data calibrated to public results; not Aramco actuals."
-        ),
-    },
-    "bronze_tb_raw": {
-        "columns": _TB_COLUMNS,
-        "descriptions": _TB_DESCRIPTIONS,
-        "table_description": (
-            "Affiliate (SABIC, Petro Rabigh) quarterly trial balances, "
-            "unpivoted from 9 quarter columns into one row per account per "
-            "period. 990 rows = (66 SABIC + 44 Petro Rabigh accounts) x 9 "
-            "periods — account rows only. Both section-divider rows "
-            "(verified redundant with category) and subtotal rows are "
-            "dropped at ingest, so this table's grain matches "
-            "silver.fact_trial_balance exactly. Refuses to land unless "
-            "every period column proves to nil. All columns STRING. "
-            "SYNTHETIC data."
-        ),
-    },
-    "bronze_group_tb_raw": {
-        "columns": _GROUP_TB_COLUMNS,
-        "descriptions": _GROUP_TB_DESCRIPTIONS,
-        "table_description": (
-            "Saudi Aramco's own (parent-only, GROUP CORE OPERATIONS, no "
-            "affiliates) quarterly trial balance in G-node vocabulary, "
-            "unpivoted the same way as bronze_tb_raw. 531 rows = 59 account/"
-            "subtotal rows x 9 periods (68 body rows minus 9 dropped section "
-            "dividers, verified redundant with category). Refuses to land "
-            "unless every period column proves to nil. All columns STRING. "
-            "SYNTHETIC data."
-        ),
-    },
-    "bronze_ifrs_rubric_raw": {
-        "columns": _IFRS_RUBRIC_COLUMNS,
-        "descriptions": _IFRS_RUBRIC_DESCRIPTIONS,
-        "table_description": (
-            "IFRS disclosure requirements rubric — Agent 4 (Disclosure "
-            "Drafting) reference data. 15 rows = 3 standards x 5 "
-            "requirements. Sourced from ifrs_requirements_updated.csv; the "
-            "'Compliant version'/'Gap version'/'Gap detail' columns of the "
-            "original workbook are the demo answer key and remain "
-            "deliberately excluded. evidence_type and check_guidance make "
-            "the rubric machine-actionable. standard_code joins to "
-            "bronze_ifrs_standard_raw."
-        ),
-    },
-    "bronze_ifrs_standard_raw": {
-        "columns": _IFRS_STANDARD_COLUMNS,
-        "descriptions": _IFRS_STANDARD_DESCRIPTIONS,
-        "table_description": (
-            "One row per IFRS/IAS standard in scope — the standard-level "
-            "parent of bronze_ifrs_rubric_raw. 3 rows: IFRS 15, IAS 24, "
-            "IAS 16. Separate from the rubric because disclosure_summary is "
-            "a paragraph with only three distinct values, and repeating it "
-            "across five requirement rows per standard invites drift."
-        ),
-    },
-    "bronze_entity_context_raw": {
-        "columns": _ENTITY_CONTEXT_COLUMNS,
-        "descriptions": _ENTITY_CONTEXT_DESCRIPTIONS,
-        "table_description": (
-            "Reporting-entity metadata as key-value pairs: entity, period, "
-            "currency, units, segments, reporting framework, sign "
-            "convention. 13 rows. Deliberately key-value (EAV) shaped "
-            "because the attributes are open-ended narrative, there is "
-            "exactly one entity described, and the consumer is an agent "
-            "reading prose rather than a tool aggregating a measure. Source: "
-            "entity_context (1).csv — a shorter 10-key file of the same name "
-            "exists and is NOT the authoritative one."
         ),
     },
     "bronze_checklist_raw": {
