@@ -46,9 +46,11 @@ DATASET = "bronze"            # matches the dataset already in the project
 # are a hard error.
 DEFAULT_LOCATION = "me-central2"   # Dammam — confirmed: the existing
                                    # bronze/silver datasets are both here
-# Set to None to load straight from the local file (no bucket needed).
-BUCKET = None
-CSV_BLOB_DIR = "bronze"
+# Set to None to load straight from memory (no bucket needed). Set to a
+# bucket name to stage the rendered CSV in GCS first — gives a byte-for-byte
+# lineage artifact of exactly what was loaded, at gs://<BUCKET>/<CSV_BLOB_DIR>/.
+BUCKET = "aramco-finance-poc-raw-landing"
+CSV_BLOB_DIR = "staging"
 
 # Expected row counts, per the DBML (bronze.dbml v2, 12 Aug). A mismatch
 # here means the pack changed shape and needs eyes on it before it lands.
