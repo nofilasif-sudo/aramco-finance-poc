@@ -5,6 +5,10 @@
     python scripts/push_to_bq.py             # extract, upload, load, verify
     python scripts/push_to_bq.py --only bronze_coa_raw
 
+    # write to a different dataset (e.g. to validate against the existing
+    # live bronze tables before ever touching them):
+    python scripts/push_to_bq.py --dataset bronze_staging
+
 Order matters, PER TABLE: the extract runs and reconciles BEFORE anything
 touches the cloud for that table. If a control total or nil-proof fails,
 nothing is uploaded and nothing is loaded for that table — but the other
@@ -271,7 +275,12 @@ def main() -> int:
     ap.add_argument("--check", action="store_true",
                     help="extract + connectivity test only; write nothing")
     ap.add_argument("--only", help="comma-separated table names to run")
+    ap.add_argument("--dataset", default="bronze",
+                    help="dataset to create/load tables in (default: bronze)")
     args = ap.parse_args()
+
+    global DATASET
+    DATASET = args.dataset
 
     from google.cloud import bigquery
     client = bigquery.Client(project=PROJECT)

@@ -358,6 +358,12 @@ def ensure_table(client, table_id: str, location: str, ddl_path) -> None:
     an already-created table needs an explicit ALTER TABLE statement added
     to the same file (see silver/sql/silver_build.sql for the pattern) —
     this function will not silently evolve a live table's schema for you.
+
+    table_id's dataset does not have to be "bronze" — every .sql file
+    hardcodes `.bronze.` as its dataset qualifier, so if table_id targets
+    a different dataset (e.g. bronze_staging, for validating a run before
+    it touches the live tables), that qualifier is rewritten to match
+    before the DDL runs.
     """
     from google.cloud import bigquery
 
@@ -367,6 +373,7 @@ def ensure_table(client, table_id: str, location: str, ddl_path) -> None:
     client.create_dataset(ds, exists_ok=True)
 
     ddl_sql = Path(ddl_path).read_text(encoding="utf-8")
+    ddl_sql = ddl_sql.replace(".bronze.", f".{dataset}.")
     client.query(ddl_sql, location=location).result()
 
 
