@@ -14,10 +14,11 @@ Reuses the same (name, module, config file) registry as `python -m
 bronze_ingest`, so the two entry points can never define a different set of
 tables or configs.
 
-Trial balance (bronze_tb_raw, bronze_group_tb_raw) is owned by another
-developer — see trial_balance/ at the repo root. The CSV-sourced tables
+Affiliate trial balance (bronze_tb_raw) is owned by another developer — see
+trial_balance/ at the repo root. The CSV-sourced tables
 (bronze_ifrs_standard_raw, bronze_ifrs_rubric_raw, bronze_entity_context_raw)
-are likewise ingested elsewhere and are not part of this script.
+are likewise ingested elsewhere and are not part of this script. The Group
+(parent-only) trial balance, bronze_group_tb_raw, is owned by this script.
 """
 
 from __future__ import annotations
@@ -50,6 +51,7 @@ CSV_BLOB_DIR = "bronze"
 # here means the pack changed shape and needs eyes on it before it lands.
 EXPECTED_ROWS = {
     "bronze_coa_raw": 188,
+    "bronze_group_tb_raw": 531,
     "bronze_checklist_raw": 14,
 }
 
@@ -84,6 +86,20 @@ def verify_coa(client, table_id: str) -> bool:
         ("source_file never empty",
          f"SELECT COUNTIF(COALESCE(source_file,'')='')=0 AS ok "
          f"FROM `{table_id}`"),
+    ]
+    return _run_checks(client, checks)
+
+
+def verify_tb_like(client, table_id: str, entity_col: str) -> bool:
+    checks = [
+        (f"no NULL {entity_col} (null_marker regression check)",
+         f"SELECT COUNTIF({entity_col} IS NULL)=0 AS ok FROM `{table_id}`"),
+        ("no NULL period_label or source_file",
+         f"SELECT COUNTIF(period_label IS NULL OR source_file IS NULL)=0 "
+         f"AS ok FROM `{table_id}`"),
+        ("9 distinct period labels",
+         f"SELECT COUNT(DISTINCT period_label) = 9 AS ok, "
+         f"COUNT(DISTINCT period_label) AS actual FROM `{table_id}`"),
     ]
     return _run_checks(client, checks)
 
@@ -193,6 +209,8 @@ def push_one(client, name: str, module, config_file: str, args) -> bool:
     ok = verify_common(client, table_id, name, expected or len(rows))
     if name == "bronze_coa_raw":
         ok &= verify_coa(client, table_id)
+    elif name == "bronze_group_tb_raw":
+        ok &= verify_tb_like(client, table_id, "account")
     elif name == "bronze_checklist_raw":
         ok &= verify_reference(client, table_id, ["item", "document"])
     print("Done." if ok else "Loaded, but a verification check FAILED.")

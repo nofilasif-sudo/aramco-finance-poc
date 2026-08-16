@@ -5,15 +5,16 @@ It stays thin on purpose: everything below it is importable, so Path 2 or an
 orchestrator can call `<module>.extract()` directly without going through
 argparse.
 
-Runs both bronze tables in one invocation. Each table reconciles
+Runs this package's bronze tables in one invocation. Each table reconciles
 independently: a bad control total or nil-proof in one table stops that
-table's write and is reported, but does not prevent the other from
+table's write and is reported, but does not prevent the others from
 landing.
 
-Trial balance (bronze_tb_raw, bronze_group_tb_raw) and the CSV-sourced
-tables (bronze_ifrs_standard_raw, bronze_ifrs_rubric_raw,
-bronze_entity_context_raw) are owned/ingested elsewhere and are not part of
-this package — see trial_balance/ at the repo root for trial balance.
+Affiliate trial balance (bronze_tb_raw) and the CSV-sourced tables
+(bronze_ifrs_standard_raw, bronze_ifrs_rubric_raw, bronze_entity_context_raw)
+are owned/ingested elsewhere and are not part of this package — see
+trial_balance/ at the repo root for affiliate trial balance. The Group
+(parent-only) trial balance, bronze_group_tb_raw, is owned by this package.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import checklist, coa
+from . import checklist, coa, group_tb
 from .excel import IngestError
 from .sink import write_csv
 
@@ -35,6 +36,7 @@ CONFIG_DIR = ROOT / "configs"
 # table this package owns.
 TABLES = [
     ("bronze_coa_raw",           coa,             "bronze_coa.json"),
+    ("bronze_group_tb_raw",      group_tb,        "bronze_group_tb.json"),
     ("bronze_checklist_raw",     checklist,       "bronze_checklist.json"),
 ]
 
@@ -69,7 +71,7 @@ def run_one(name: str, module, cfg: dict, dry_run: bool) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(
         prog="bronze-ingest",
-        description="Excel data pack -> bronze CSVs (coa, checklist)")
+        description="Excel data pack -> bronze CSVs (coa, group_tb, checklist)")
     ap.add_argument("--config-dir", type=Path, default=CONFIG_DIR)
     ap.add_argument("--dry-run", action="store_true",
                     help="run the checks, write nothing")

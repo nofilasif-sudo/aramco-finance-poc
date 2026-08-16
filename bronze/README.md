@@ -60,16 +60,18 @@ bronze_ingestion/
 │       ├── excel.py         generic worksheet parsing — knows nothing of any bronze table
 │       ├── sink.py          shared CSV writer — knows nothing of any bronze table either
 │       ├── coa.py           bronze_coa_raw   — 3 chart tabs stacked
+│       ├── group_tb.py      bronze_group_tb_raw — Aramco (parent-only) trial balance, unpivoted
 │       ├── checklist.py     bronze_checklist_raw — required submission documents
 │       └── cloud.py         GCS + BigQuery adapters, one registry entry per table
 └── tests/                   one test file per extractor, stdlib unittest
 ```
 
-Trial balance (`bronze_tb_raw`, `bronze_group_tb_raw`) is owned by another
-developer — see `trial_balance/` at the repo root. The CSV-sourced tables
+Affiliate trial balance (`bronze_tb_raw`) is owned by another developer —
+see `trial_balance/` at the repo root. The CSV-sourced tables
 (`bronze_ifrs_standard_raw`, `bronze_ifrs_rubric_raw`,
 `bronze_entity_context_raw`) are likewise ingested elsewhere and are not
-part of this package.
+part of this package. The Group (parent-only) trial balance,
+`bronze_group_tb_raw`, is owned by this package.
 
 `excel.py` and `sink.py` are separate from the table modules because they
 are genuinely domain-agnostic — the same header-discovery, melt, and

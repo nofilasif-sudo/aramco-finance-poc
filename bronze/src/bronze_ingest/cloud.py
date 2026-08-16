@@ -12,8 +12,9 @@ Generalized from a single CoA-only schema to a registry (BRONZE_TABLES) so
 the same bq_schema()/ensure_table()/load helpers serve every bronze table
 this package owns instead of being re-hardcoded per table.
 
-Trial balance and the CSV-sourced tables (ifrs standard/rubric, entity
-context) are ingested elsewhere and are not defined here.
+Affiliate trial balance and the CSV-sourced tables (ifrs standard/rubric,
+entity context) are ingested elsewhere and are not defined here. The Group
+(parent-only) trial balance, bronze_group_tb_raw, is owned by this package.
 """
 
 from __future__ import annotations
@@ -82,6 +83,32 @@ _COA_COLUMNS, _COA_DESCRIPTIONS = with_source_file(
     },
 )
 
+_GROUP_TB_COLUMNS, _GROUP_TB_DESCRIPTIONS = with_source_file(
+    ["account", "group_node", "type", "category", "period_label", "amount"],
+    {
+        "account":
+            "The G-prefixed 5-digit Group node code, e.g. 'G11000'. Section "
+            "header rows land here too.",
+        "group_node":
+            "The Group node NAME, e.g. 'Property, plant & equipment (net)'. "
+            "EXTRA COLUMN vs bronze_tb_raw — this sheet carries both the code "
+            "(in `account`) and the name (here); silver decides what to do "
+            "with them.",
+        "type":
+            "LONG FORM here — 'Balance sheet' / 'Income statement' — NOT the "
+            "affiliate TB's BS/PL abbreviations for the same concept. Bronze "
+            "does not harmonise vocabularies across sources.",
+        "category":
+            "FS caption group.",
+        "period_label":
+            "Raw header string, e.g. '2024 Q1'. Same 9 quarters as "
+            "bronze_tb_raw.",
+        "amount":
+            "Signed balance for this node and period, kept as text. Aramco "
+            "GROUP CORE OPERATIONS ONLY — no affiliates in this figure.",
+    },
+)
+
 _CHECKLIST_COLUMNS, _CHECKLIST_DESCRIPTIONS = with_source_file(
     ["item", "document", "required", "applies_to", "expected_format",
      "description"],
@@ -123,6 +150,19 @@ BRONZE_TABLES = {
             "affiliate-to-Group mapping does not exist in this pack — it is "
             "Agent 3's output, produced with a confidence score, not an input. "
             "SYNTHETIC data calibrated to public results; not Aramco actuals."
+        ),
+    },
+    "bronze_group_tb_raw": {
+        "columns": _GROUP_TB_COLUMNS,
+        "descriptions": _GROUP_TB_DESCRIPTIONS,
+        "table_description": (
+            "Saudi Aramco's own (parent-only, GROUP CORE OPERATIONS, no "
+            "affiliates) quarterly trial balance in G-node vocabulary, "
+            "unpivoted the same way as bronze_tb_raw. 531 rows = 59 account/"
+            "subtotal rows x 9 periods (68 body rows minus 9 dropped section "
+            "dividers, verified redundant with category). Refuses to land "
+            "unless every period column proves to nil. All columns STRING. "
+            "SYNTHETIC data."
         ),
     },
     "bronze_checklist_raw": {
