@@ -118,11 +118,15 @@ def check_nulls(client, table_id: str, cols: list[str]) -> bool:
 
 def check_ri(client, table_id: str, fk_col: str, ref_table_id: str,
             ref_col: str, where: str = "") -> bool:
-    clause = f"WHERE {where}" if where else ""
+    # `where` filters t (e.g. "t.level = 2" for a self-join where only
+    # some rows carry the FK) and must be ANDed into the single WHERE
+    # after the JOIN, not placed before it — a WHERE before a JOIN is
+    # invalid SQL.
+    extra = f" AND ({where})" if where else ""
     n = _count(client,
-        f"SELECT COUNT(*) FROM `{table_id}` t {clause} "
+        f"SELECT COUNT(*) FROM `{table_id}` t "
         f"LEFT JOIN `{ref_table_id}` r ON t.{fk_col} = r.{ref_col} "
-        f"WHERE r.{ref_col} IS NULL")
+        f"WHERE r.{ref_col} IS NULL{extra}")
     status = "OK" if n == 0 else "FAIL"
     ref_name = ref_table_id.rsplit(".", 1)[-1]
     print(f"    [{status}] RI         {fk_col} -> {ref_name}.{ref_col}: "
@@ -158,7 +162,7 @@ def table_wise_dq(client, bronze_dataset: str, silver_dataset: str) -> bool:
     all_ok &= check_nulls(client, f"{s}.dim_group_account",
         ["group_node", "group_name", "statement", "category", "normal_balance", "level"])
     all_ok &= check_ri(client, f"{s}.dim_group_account", "parent_group_node",
-                       f"{s}.dim_group_account", "group_node", where="level = 2")
+                       f"{s}.dim_group_account", "group_node", where="t.level = 2")
     all_ok &= check_source_to_target(
         client,
         f"SELECT COUNT(*) FROM `{b}.bronze_coa_raw` WHERE chart_scope = 'GROUP'",
