@@ -11,20 +11,17 @@
 -- silver_coa.sql (superseded by this file) now that silver is being fed
 -- incrementally rather than rebuilt from scratch each run.
 --
--- dim_entity, dim_period, dim_account, dim_group_account, fact_trial_balance
--- and map_account_to_group ALREADY EXIST in BigQuery — no CREATE TABLE for
--- those, MERGE only (fact_trial_balance additionally gets one
--- ADD COLUMN IF NOT EXISTS for source_file, which the table predates).
--- fact_group_trial_balance, dim_ifrs_requirement and dim_required_document
--- are genuinely new, so they get CREATE TABLE IF NOT EXISTS ahead of their
--- MERGE.
+-- dim_entity, dim_period, dim_account, dim_group_account and
+-- map_account_to_group ALREADY EXIST in BigQuery — no CREATE TABLE for
+-- those, MERGE only. fact_group_trial_balance, dim_ifrs_requirement and
+-- dim_required_document are genuinely new, so they get CREATE TABLE IF
+-- NOT EXISTS ahead of their MERGE.
 --
--- fact_trial_balance is REWIRED here from the old bronze_trial_balance_raw
--- onto bronze_tb_raw (this pipeline's own table, now account-rows-only —
--- see tb.py). Verified before rewiring: the two sources' 990 account rows
--- are byte-identical, so this changes nothing about the figures — it adds
--- source_file lineage and a maintained pipeline behind the table. See that
--- section below for the composite-key join reasoning.
+-- fact_trial_balance is OUT OF SCOPE for this file: it is sourced from
+-- bronze_tb_raw (affiliate trial balance), which is owned by another
+-- developer's trial_balance/ pipeline — same ownership boundary as
+-- excluding bronze_tb_raw itself from this repo's bronze/. Not built,
+-- not upserted, not checked here.
 --
 -- map_account_to_group is NOT touched by this file — it is Agent 3's
 -- deliberately-empty output slot, and nothing here produces mapping rows.
@@ -120,59 +117,6 @@ WHEN MATCHED THEN UPDATE SET
   code_block = src.code_block
 WHEN NOT MATCHED THEN INSERT (entity_code, account_code, account_name, statement_type, category, normal_balance, code_block)
 VALUES (src.entity_code, src.account_code, src.account_name, src.statement_type, src.category, src.normal_balance, src.code_block);
-
-
--- ---------------------------------------------------------------------------
--- fact_trial_balance — the affiliate atom. Rewired from the old
--- bronze_trial_balance_raw onto bronze_tb_raw (this pipeline's own table).
--- Verified beforehand: bronze_tb_raw's 990 account rows are byte-identical
--- to what bronze_trial_balance_raw already had (EXCEPT DISTINCT both
--- directions, 0 rows differ) — this rewire changes nothing about the 990
--- existing figures, it only adds source_file lineage and a maintained
--- pipeline behind the table.
---
--- *** THE JOIN TO dim_account MUST USE BOTH entity_code AND account_code ***
--- account_code alone is not unique: 42 codes are shared between SABIC and
--- Petro Rabigh, 15 of which mean different things. Joining on account_code
--- alone silently misattributes balances and still returns a number that
--- looks plausible (join_checks.sql section C proves this: SABIC's 2024 Q1
--- revenue comes out exactly double under the wrong join).
---
--- ADD COLUMN IF NOT EXISTS, not a recreate: this table already existed
--- before source_file was added to the bronze contract.
--- ---------------------------------------------------------------------------
-ALTER TABLE `aramco-finance-poc-c2a4.silver.fact_trial_balance`
-  ADD COLUMN IF NOT EXISTS source_file STRING
-  OPTIONS(description="Original workbook filename this row's bronze source row was read from. ADDED AT INGEST, propagated up from bronze_tb_raw.");
-
-MERGE `aramco-finance-poc-c2a4.silver.fact_trial_balance` AS tgt
-USING (
-  SELECT
-    d.entity_code                                                   AS entity_code,
-    d.account_code                                                  AS account_code,
-    p.period_key                                                    AS period_key,
-    CAST(b.amount AS NUMERIC)                                       AS ledger_amount,
-    CASE d.normal_balance
-      WHEN 'Cr' THEN -CAST(b.amount AS NUMERIC)
-      ELSE CAST(b.amount AS NUMERIC)
-    END                                                              AS presentation_amount,
-    'SAR'                                                            AS currency,
-    'thousands'                                                      AS amount_unit,
-    b.source_file                                                   AS source_file
-  FROM `aramco-finance-poc-c2a4.bronze.bronze_tb_raw` b
-  JOIN `aramco-finance-poc-c2a4.silver.dim_account` d
-       ON b.affiliate_code = d.entity_code AND b.account = d.account_code
-  JOIN `aramco-finance-poc-c2a4.silver.dim_period`  p ON b.period_label = p.period_label
-) AS src
-ON tgt.entity_code = src.entity_code AND tgt.account_code = src.account_code AND tgt.period_key = src.period_key
-WHEN MATCHED THEN UPDATE SET
-  ledger_amount = src.ledger_amount,
-  presentation_amount = src.presentation_amount,
-  currency = src.currency,
-  amount_unit = src.amount_unit,
-  source_file = src.source_file
-WHEN NOT MATCHED THEN INSERT (entity_code, account_code, period_key, ledger_amount, presentation_amount, currency, amount_unit, source_file)
-VALUES (src.entity_code, src.account_code, src.period_key, src.ledger_amount, src.presentation_amount, src.currency, src.amount_unit, src.source_file);
 
 
 -- ---------------------------------------------------------------------------

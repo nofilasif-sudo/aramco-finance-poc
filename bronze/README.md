@@ -1,92 +1,136 @@
-# Bronze Ingestion — Chart of Accounts
+# Bronze Ingestion
 
-Aramco FC&RD PoC. Reads `PoC_Charts_of_Accounts.xlsx` and emits
-`bronze_coa_raw.csv` per the agreed DBML: eight columns, all text, three chart
-tabs stacked.
+Aramco FC&RD PoC. Reads source Excel workbooks and CSVs, reconciles them
+against their own control totals, and lands them as bronze tables — either
+as local CSVs (`python -m bronze_ingest`) or straight into BigQuery
+(`scripts/push_to_bq.py`).
 
-Scope is **CoA only**. Trial-balance ingestion is out of scope for this
-deliverable.
+## Scope
 
-## Quick start
+This package owns 6 of the 7 bronze tables in the project:
+
+| Table | Source | Format |
+|---|---|---|
+| `bronze_coa_raw` | `PoC_Charts_of_Accounts (1).xlsx` | xlsx |
+| `bronze_group_tb_raw` | `PoC_Group_Trial_Balance_Aramco.xlsx` | xlsx |
+| `bronze_checklist_raw` | `PoC_Submission_Validator.xlsx` | xlsx |
+| `bronze_ifrs_standard_raw` | `ifrs_standard_context.csv` | csv |
+| `bronze_ifrs_rubric_raw` | `ifrs_requirements_updated.csv` | csv |
+| `bronze_entity_context_raw` | `entity_context (1).csv` | csv |
+
+**`bronze_tb_raw`** (affiliate trial balance) is **not** part of this
+package — it's owned by another developer's `trial_balance/` pipeline at
+the repo root. Don't add it here; don't build silver logic here that
+depends on it (see `../silver/README.md`).
+
+## Architecture
+
+```
+bronze/
+├── pyproject.toml, requirements.txt   package + runtime deps (openpyxl only)
+├── configs/                           one JSON per table — paths + parsing knobs, no logic
+├── sql/                                FIXED DDL, one CREATE TABLE IF NOT EXISTS per table
+│   └── bronze_<table>.sql              hand-maintained — edit here to change a schema
+├── src/bronze_ingest/
+│   ├── __main__.py                    local CLI: python -m bronze_ingest (CSV only, no cloud)
+│   ├── excel.py                       generic xlsx parsing — header discovery, table
+│   │                                   boundaries, row classification. Knows nothing of
+│   │                                   any specific table.
+│   ├── flatcsv.py                     generic CSV-row reader, same role as excel.py for
+│   │                                   the 3 CSV-sourced tables
+│   ├── coa.py, group_tb.py,           one extractor module per table — owns its own
+│   │   checklist.py, ifrs_standard.py,  schema, column aliases, and fail-closed
+│   │   ifrs_rubric.py,                  reconciliation checks (control totals /
+│   │   entity_context.py                nil-proofs). extract(path, cfg, report) -> rows
+│   ├── sink.py                        shared CSV renderer, used by both the local CLI
+│   │                                   and push_to_bq.py
+│   └── cloud.py                       GCS + BigQuery adapters: ensure_table() (applies
+│                                       the fixed DDL), load_csv_from_memory/_gcs(),
+│                                       upload_csv(). BRONZE_TABLES registry maps table
+│                                       name -> (columns, descriptions) for the load job.
+├── scripts/
+│   ├── push_to_bq.py                  THE cloud entry point: extract -> reconcile ->
+│   │                                   apply DDL -> load -> verify, per table
+│   └── export_ddl.py                  re-baseline sql/*.sql from a live table's schema
+│                                       (rare — DDL is normally hand-edited, not exported)
+└── tests/                             one test file per extractor, stdlib unittest
+```
+
+**Data flow for one table**, `push_to_bq.py`'s `push_one()`:
+
+1. **Extract** — `<table>.extract(path, cfg, report)` parses the xlsx/CSV and
+   returns rows in memory, having already verified its own control total or
+   nil-proof (raises `IngestError` before any cloud call if it doesn't
+   balance).
+2. **Render** — `sink.to_csv_text()` turns the rows into CSV text, kept in
+   memory. **Nothing is written to local disk** — no `outputs/` folder from
+   this script.
+3. **Apply DDL** — `cloud.ensure_table()` reads the table's fixed
+   `sql/<table>.sql` and executes `CREATE TABLE IF NOT EXISTS` — idempotent,
+   safe to re-run. This is the schema's only source of truth; nothing here
+   builds or evolves a schema in Python.
+4. **Load** — either uploaded to GCS first (`gs://aramco-finance-poc-raw-landing/staging/<table>.csv`,
+   a byte-for-byte lineage artifact) then loaded from there, or streamed
+   straight from memory into the BigQuery load job — controlled by the
+   `BUCKET` setting at the top of `push_to_bq.py`.
+5. **Verify** — table-specific post-load checks re-query BigQuery directly
+   (row counts, no-NULL, uniqueness, referential integrity) — proves the
+   *loaded table* is right, not just that the CSV was right.
+
+`excel.py`/`flatcsv.py` and `sink.py` are deliberately domain-agnostic: the
+same parsing/rendering logic serves every table and would serve a new one
+unchanged. Each table module owns everything specific to it.
+
+**Every bronze row carries `source_file`** — the workbook/CSV filename it
+was read from, added at ingest (not a column in any source file). Lets a
+row be traced back to exactly what produced it.
+
+## How to run
+
+### Local only (no cloud, no credentials needed)
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate          # Windows;  source .venv/bin/activate on *nix
+.venv\Scripts\activate          # Windows; source .venv/bin/activate on *nix
 pip install -e .
 
-# put the workbook where the config expects it
-mkdir data && copy PoC_Charts_of_Accounts.xlsx data\
+mkdir data   # put the source files where each configs/*.json expects them
 
-python -m unittest discover -s tests    # no pytest needed
-python -m bronze_ingest                 # writes all of this package's bronze CSVs to outputs/
-python -m bronze_ingest --only bronze_coa_raw   # just one table
+python -m unittest discover -s tests            # run the test suite
+python -m bronze_ingest                         # writes every table's CSV to outputs/
+python -m bronze_ingest --only bronze_coa_raw    # just one table
+python -m bronze_ingest --dry-run               # run checks, write nothing
 ```
 
-`pip install -e .` also installs a `bronze-ingest` command. On Windows Store
-Python its Scripts directory is not on PATH by default, so `python -m
-bronze_ingest` is the reliable form.
-
-Useful flags:
+### Cloud (BigQuery)
 
 ```bash
-python -m bronze_ingest --dry-run                  # run checks, write nothing
-python -m bronze_ingest --input other.xlsx         # override the config
-python -m bronze_ingest --config configs/alt.json
+pip install google-cloud-bigquery google-cloud-storage
+gcloud auth application-default login            # or set GOOGLE_APPLICATION_CREDENTIALS
+
+python scripts/push_to_bq.py --check              # extract + reconcile + connectivity, writes nothing
+python scripts/push_to_bq.py                      # real run: extract -> DDL -> load -> verify
+python scripts/push_to_bq.py --only bronze_coa_raw # just one table
+
+# validate in a separate dataset before ever touching the live bronze.* tables:
+python scripts/push_to_bq.py --dataset bronze_staging
 ```
 
-## Expected output
+Source files live in `gs://aramco-finance-poc-raw-landing/other_files/` —
+pull the ones you need into `data/` with `gsutil cp` before running.
+
+## Expected output (bronze_coa_raw)
 
 | Tab | Source rows | Dividers dropped | Landed |
 |---|---:|---:|---:|
 | CoA - Group (Aramco) | 89 | 11 | **78** |
 | CoA - SABIC (2010) | 79 | 13 | **66** |
 | CoA - Petro Rabigh (2380) | 55 | 11 | **44** |
-| `bronze_coa_raw.csv` | | | **188** |
+| `bronze_coa_raw` | | | **188** |
 
 Landed rows equal each tab's own "Total accounts: N" footer exactly, so any
-drift shows up as a direct mismatch and the run fails.
-
-## Layout
-
-```
-bronze_ingestion/
-├── pyproject.toml           declares the package; enables `pip install -e .`
-├── requirements.txt         runtime deps (openpyxl only)
-├── configs/                 one JSON per bronze table — paths and parsing knobs, no logic
-├── src/
-│   └── bronze_ingest/
-│       ├── __init__.py      makes this an importable package
-│       ├── __main__.py      thin CLI; `python -m bronze_ingest` runs this package's tables
-│       ├── excel.py         generic worksheet parsing — knows nothing of any bronze table
-│       ├── sink.py          shared CSV writer — knows nothing of any bronze table either
-│       ├── coa.py           bronze_coa_raw   — 3 chart tabs stacked
-│       ├── group_tb.py      bronze_group_tb_raw — Aramco (parent-only) trial balance, unpivoted
-│       ├── ifrs_standard.py bronze_ifrs_standard_raw — IFRS/IAS standards (CSV-sourced)
-│       ├── ifrs_rubric.py   bronze_ifrs_rubric_raw — IFRS disclosure requirements (CSV-sourced)
-│       ├── entity_context.py bronze_entity_context_raw — reporting-entity metadata (CSV-sourced)
-│       ├── checklist.py     bronze_checklist_raw — required submission documents
-│       ├── flatcsv.py       shared CSV-row reader for the CSV-sourced tables
-│       └── cloud.py         GCS + BigQuery adapters, one registry entry per table
-└── tests/                   one test file per extractor, stdlib unittest
-```
-
-Affiliate trial balance (`bronze_tb_raw`) is owned by another developer —
-see `trial_balance/` at the repo root. Every other bronze table is owned
-by this package.
-
-`excel.py` and `sink.py` are separate from the table modules because they
-are genuinely domain-agnostic — the same header-discovery, melt, and
-CSV-writing logic serves every xlsx-sourced table unchanged. `flatcsv.py`
-plays the same role for the CSV-sourced tables. Each table module owns its
-own schema, aliases, and fail-closed checks; nothing about a specific
-source file lives in `excel.py`/`flatcsv.py`.
-
-**Every bronze row carries `source_file`** — the workbook filename it was
-read from, added at ingest the same way `chart_scope`/`affiliate_code` are:
-it is not a column in any sheet, and it disappears the moment tabs are
-stacked, so it has to be captured at read time or not at all. It lets a row
-be traced back to the exact file it came from when a workbook is re-shared
-or re-versioned (e.g. the `(1)` copies verified value-identical on 12 Aug).
+drift shows up as a direct mismatch and the run fails. Expected row counts
+for every table live in `scripts/push_to_bq.py`'s `EXPECTED_ROWS`.
 
 ## Design decisions worth knowing
 
@@ -120,10 +164,16 @@ confirmed with Hussein. Justification, verified against the pack:
 Set `"drop_section_rows": false` to restore strict DBML behaviour; there is a
 test covering that path.
 
-**The run fails rather than landing unverified data.** Each tab's control total
-is reconciled before anything is written. A pipeline that lands unverified data
-is worse than one that fails, because the failure is then discovered downstream
-by someone who trusts the number.
+**The run fails rather than landing unverified data.** Each table's control
+total or nil-proof is reconciled before anything touches the cloud. A
+pipeline that lands unverified data is worse than one that fails, because
+the failure is then discovered downstream by someone who trusts the number.
+
+**Schema changes go through `sql/*.sql`, not Python.** `cloud.ensure_table()`
+executes the fixed DDL file verbatim; it no longer builds or auto-evolves a
+schema. To add, rename, or retype a column: edit the `.sql` file. `CREATE
+TABLE IF NOT EXISTS` is a no-op against an already-existing table, so a
+real change on a live table also needs an explicit `ALTER TABLE`.
 
 **No pandas.** There is no melt, no arithmetic, and every value lands as text —
 pandas would add ~50 MB and a numpy ABI constraint to save nothing.

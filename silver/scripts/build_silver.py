@@ -14,18 +14,22 @@ Exits non-zero if any DQ check fails, so this is safe to put in CI later.
 
 Table CREATION is DDL-first, same as bronze/scripts/push_to_bq.py: each
 table in TABLES has a fixed CREATE TABLE IF NOT EXISTS in sql/<table>.sql,
-applied here in dependency order (dim_entity/dim_period before
-fact_trial_balance, which has FOREIGN KEY constraints on them) before the
-MERGE statements in sql/silver_build.sql run. Edit the .sql file to change
-a table's schema — this script only applies it, never builds it in Python.
+applied here in dependency order before the MERGE statements in
+sql/silver_build.sql run. Edit the .sql file to change a table's schema —
+this script only applies it, never builds it in Python.
 
 Covers dim_entity, dim_period, dim_account, dim_group_account,
-fact_trial_balance, fact_group_trial_balance, dim_ifrs_standard,
-dim_ifrs_requirement, dim_entity_context, dim_required_document — see
-sql/silver_build.sql for the MERGE statements.
+fact_group_trial_balance, dim_ifrs_standard, dim_ifrs_requirement,
+dim_entity_context, dim_required_document — see sql/silver_build.sql for
+the MERGE statements.
 
-Requires bronze_tb_raw and its siblings (bronze_group_tb_raw,
-bronze_ifrs_rubric_raw, bronze_checklist_raw) to already be loaded — run
+fact_trial_balance is OUT OF SCOPE: it is sourced from bronze_tb_raw
+(affiliate trial balance), owned by another developer's trial_balance/
+pipeline. Not built, DDL'd, or checked here — same ownership boundary as
+excluding bronze_tb_raw itself from this repo's bronze/.
+
+Requires bronze_group_tb_raw, bronze_ifrs_rubric_raw, bronze_checklist_raw
+(and the other tables this pass reads) to already be loaded — run
 bronze/scripts/push_to_bq.py first (same --bronze-dataset value, so this
 reads from wherever that pass wrote to).
 """
@@ -46,13 +50,13 @@ BUILD = ROOT / "sql" / "silver_build.sql"
 CHECKS = ROOT / "sql" / "silver_checks.sql"
 SQL_DIR = ROOT / "sql"
 
-# DDL applied in this order — dim_entity/dim_period before fact_trial_balance
-# (its FOREIGN KEY constraints reference them), everything else has no
-# cross-table dependency at CREATE time. Also the order build_silver prints
-# row counts in after a real build.
+# DDL applied in this order. No cross-table dependency at CREATE time among
+# these (fact_trial_balance was the only one with FOREIGN KEY constraints,
+# and it is out of scope — see module docstring). Also the order
+# build_silver prints row counts in after a real build.
 TABLES = ["dim_entity", "dim_period", "dim_account", "dim_group_account",
-          "fact_trial_balance", "fact_group_trial_balance",
-          "dim_ifrs_standard", "dim_ifrs_requirement", "dim_entity_context",
+          "fact_group_trial_balance", "dim_ifrs_standard",
+          "dim_ifrs_requirement", "dim_entity_context",
           "dim_required_document"]
 
 

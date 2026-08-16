@@ -9,7 +9,6 @@
 WITH
 da  AS (SELECT * FROM `aramco-finance-poc-c2a4.silver.dim_account`),
 dga AS (SELECT * FROM `aramco-finance-poc-c2a4.silver.dim_group_account`),
-ftb AS (SELECT * FROM `aramco-finance-poc-c2a4.silver.fact_trial_balance`),
 
 checks AS (
 
@@ -46,33 +45,25 @@ checks AS (
          COUNTIF(code_block NOT BETWEEN '1' AND '8') = 0,
          FORMAT('bad %d', COUNTIF(code_block NOT BETWEEN '1' AND '8')) FROM da
 
-  -- 4. REFERENTIAL INTEGRITY, the one that matters most. Every fact row must
-  --    find its account. An orphan here means a balance with no meaning.
+  -- 4. Group chart shape.
   UNION ALL
-  SELECT 7, 'every fact_trial_balance row joins to dim_account',
-         COUNTIF(d.account_code IS NULL) = 0,
-         FORMAT('orphan fact rows %d', COUNTIF(d.account_code IS NULL))
-  FROM ftb f LEFT JOIN da d USING (entity_code, account_code)
-
-  -- 5. Group chart shape.
-  UNION ALL
-  SELECT 8, 'dim_group_account row count = 78',
+  SELECT 7, 'dim_group_account row count = 78',
          COUNT(*) = 78, FORMAT('actual %d', COUNT(*)) FROM dga
   UNION ALL
-  SELECT 9, 'dim_group_account 52 level-1 + 26 level-2',
+  SELECT 8, 'dim_group_account 52 level-1 + 26 level-2',
          COUNTIF(level=1) = 52 AND COUNTIF(level=2) = 26,
          FORMAT('L1=%d L2=%d', COUNTIF(level=1), COUNTIF(level=2)) FROM dga
   UNION ALL
-  SELECT 10, 'dim_group_account group_node unique',
+  SELECT 9, 'dim_group_account group_node unique',
          COUNT(*) = COUNT(DISTINCT group_node),
          FORMAT('%d rows, %d distinct', COUNT(*), COUNT(DISTINCT group_node))
   FROM dga
 
-  -- 6. THE DERIVATION. Every level-2 node must resolve to a real level-1
+  -- 5. THE DERIVATION. Every level-2 node must resolve to a real level-1
   --    parent, and no level-1 node may have one. A 3-char prefix rule fails
   --    this check on 8 rows — that is exactly what it is here to catch.
   UNION ALL
-  SELECT 11, 'every level-2 node has a parent that exists and is level-1',
+  SELECT 10, 'every level-2 node has a parent that exists and is level-1',
          COUNTIF(c.level = 2 AND p.group_node IS NULL) = 0,
          FORMAT('unresolved %d of %d',
                 COUNTIF(c.level = 2 AND p.group_node IS NULL),
@@ -80,15 +71,15 @@ checks AS (
   FROM dga c LEFT JOIN dga p
     ON c.parent_group_node = p.group_node AND p.level = 1
   UNION ALL
-  SELECT 12, 'level-1 nodes have no parent',
+  SELECT 11, 'level-1 nodes have no parent',
          COUNTIF(level = 1 AND parent_group_node IS NOT NULL) = 0,
          FORMAT('bad %d', COUNTIF(level = 1 AND parent_group_node IS NOT NULL))
   FROM dga
 
-  -- 7. The bridge is expected to be empty right now. Stated as a check so the
+  -- 6. The bridge is expected to be empty right now. Stated as a check so the
   --    day it stops being empty is visible rather than assumed.
   UNION ALL
-  SELECT 13, 'map_account_to_group is still empty (Agent 3 pending)',
+  SELECT 12, 'map_account_to_group is still empty (Agent 3 pending)',
          COUNT(*) = 0, FORMAT('rows %d', COUNT(*))
   FROM `aramco-finance-poc-c2a4.silver.map_account_to_group`
 )

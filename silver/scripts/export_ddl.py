@@ -1,19 +1,18 @@
-"""Export each silver table's live DDL to sql/<table>.sql.
+"""Re-baseline sql/<table>.sql from the live table's current DDL.
 
-    python scripts/export_ddl.py              # export every silver table
+    python scripts/export_ddl.py              # re-baseline every silver table
     python scripts/export_ddl.py --only dim_entity
 
-Mirrors bronze/scripts/export_ddl.py: the DDL is EXPORTED FROM THE LIVE
-TABLE via INFORMATION_SCHEMA, not hand-authored. sql/silver_build.sql
-(the MERGE statements, plus CREATE TABLE IF NOT EXISTS for the tables it
-introduces) is the source of truth for how each table is built; these
-per-table .sql files are the reproducible, reviewable snapshot of what
-BigQuery actually has. Re-run after any schema change to keep them in sync.
+sql/<table>.sql is normally FIXED and hand-maintained — build_silver.py
+applies it, it does not build/derive it (see that script's docstring).
+This script exists for the rare case a table's live schema legitimately
+drifted from the checked-in file (e.g. someone ran a manual ALTER TABLE)
+and you want to pull the new baseline back into the repo for review,
+rather than to keep the files in permanent sync automatically.
 
-TABLES here matches the list build_silver.py prints after a real build —
-some of these tables predate this pipeline (dim_entity, dim_period,
-dim_account, dim_group_account, fact_trial_balance) and are only
-maintained, not created, by silver_build.sql; the rest are genuinely new.
+TABLES here matches build_silver.py's list minus fact_trial_balance,
+which is out of scope for this package (owned by another developer's
+trial_balance/ pipeline).
 """
 
 from __future__ import annotations
@@ -30,8 +29,8 @@ DATASET = "silver"
 SQL_DIR = ROOT / "sql"
 
 TABLES = ["dim_entity", "dim_period", "dim_account", "dim_group_account",
-          "fact_trial_balance", "fact_group_trial_balance",
-          "dim_ifrs_standard", "dim_ifrs_requirement", "dim_entity_context",
+          "fact_group_trial_balance", "dim_ifrs_standard",
+          "dim_ifrs_requirement", "dim_entity_context",
           "dim_required_document"]
 
 
