@@ -18,7 +18,7 @@ pip install -e .
 mkdir data && copy PoC_Charts_of_Accounts.xlsx data\
 
 python -m unittest discover -s tests    # no pytest needed
-python -m bronze_ingest                 # writes bronze_coa_raw + bronze_checklist_raw to outputs/
+python -m bronze_ingest                 # writes all of this package's bronze CSVs to outputs/
 python -m bronze_ingest --only bronze_coa_raw   # just one table
 ```
 
@@ -61,23 +61,25 @@ bronze_ingestion/
 │       ├── sink.py          shared CSV writer — knows nothing of any bronze table either
 │       ├── coa.py           bronze_coa_raw   — 3 chart tabs stacked
 │       ├── group_tb.py      bronze_group_tb_raw — Aramco (parent-only) trial balance, unpivoted
+│       ├── ifrs_standard.py bronze_ifrs_standard_raw — IFRS/IAS standards (CSV-sourced)
+│       ├── ifrs_rubric.py   bronze_ifrs_rubric_raw — IFRS disclosure requirements (CSV-sourced)
+│       ├── entity_context.py bronze_entity_context_raw — reporting-entity metadata (CSV-sourced)
 │       ├── checklist.py     bronze_checklist_raw — required submission documents
+│       ├── flatcsv.py       shared CSV-row reader for the CSV-sourced tables
 │       └── cloud.py         GCS + BigQuery adapters, one registry entry per table
 └── tests/                   one test file per extractor, stdlib unittest
 ```
 
 Affiliate trial balance (`bronze_tb_raw`) is owned by another developer —
-see `trial_balance/` at the repo root. The CSV-sourced tables
-(`bronze_ifrs_standard_raw`, `bronze_ifrs_rubric_raw`,
-`bronze_entity_context_raw`) are likewise ingested elsewhere and are not
-part of this package. The Group (parent-only) trial balance,
-`bronze_group_tb_raw`, is owned by this package.
+see `trial_balance/` at the repo root. Every other bronze table is owned
+by this package.
 
 `excel.py` and `sink.py` are separate from the table modules because they
 are genuinely domain-agnostic — the same header-discovery, melt, and
-CSV-writing logic serves both tables and would serve another xlsx source
-unchanged. Each table module owns its own schema, aliases, and
-fail-closed checks; nothing about a specific workbook lives in `excel.py`.
+CSV-writing logic serves every xlsx-sourced table unchanged. `flatcsv.py`
+plays the same role for the CSV-sourced tables. Each table module owns its
+own schema, aliases, and fail-closed checks; nothing about a specific
+source file lives in `excel.py`/`flatcsv.py`.
 
 **Every bronze row carries `source_file`** — the workbook filename it was
 read from, added at ingest the same way `chart_scope`/`affiliate_code` are:

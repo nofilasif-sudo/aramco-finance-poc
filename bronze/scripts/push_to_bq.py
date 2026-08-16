@@ -15,10 +15,8 @@ bronze_ingest`, so the two entry points can never define a different set of
 tables or configs.
 
 Affiliate trial balance (bronze_tb_raw) is owned by another developer — see
-trial_balance/ at the repo root. The CSV-sourced tables
-(bronze_ifrs_standard_raw, bronze_ifrs_rubric_raw, bronze_entity_context_raw)
-are likewise ingested elsewhere and are not part of this script. The Group
-(parent-only) trial balance, bronze_group_tb_raw, is owned by this script.
+trial_balance/ at the repo root. Everything else this script's TABLES
+registry lists is owned by this script.
 """
 
 from __future__ import annotations
@@ -52,6 +50,9 @@ CSV_BLOB_DIR = "bronze"
 EXPECTED_ROWS = {
     "bronze_coa_raw": 188,
     "bronze_group_tb_raw": 531,
+    "bronze_ifrs_rubric_raw": 15,
+    "bronze_ifrs_standard_raw": 3,
+    "bronze_entity_context_raw": 13,
     "bronze_checklist_raw": 14,
 }
 
@@ -109,6 +110,46 @@ def verify_reference(client, table_id: str, required_cols: list[str]) -> bool:
     checks = [
         (f"no blank {', '.join(required_cols)}",
          f"SELECT COUNTIF({cond})=0 AS ok FROM `{table_id}`"),
+    ]
+    return _run_checks(client, checks)
+
+
+def verify_unique(client, table_id: str, col: str) -> bool:
+    """A primary key that isn't unique isn't a key. Cheap, and the failure it
+    catches (a file loaded twice, two files concatenated) is otherwise silent
+    because the row count check would also have to be wrong to notice."""
+    checks = [
+        (f"{col} is unique",
+         f"SELECT COUNT(*) = COUNT(DISTINCT {col}) AS ok, "
+         f"COUNT(*) AS total, COUNT(DISTINCT {col}) AS distinct_vals "
+         f"FROM `{table_id}`"),
+    ]
+    return _run_checks(client, checks)
+
+
+def verify_rubric(client, table_id: str) -> bool:
+    """Rubric-specific: the closed evidence_type set, the 5-per-standard
+    shape, and referential integrity to the new standard parent table."""
+    std_table = f"{PROJECT}.{DATASET}.bronze_ifrs_standard_raw"
+    checks = [
+        ("evidence_type is a closed set (narrative/table_structure/both)",
+         f"SELECT COUNTIF(evidence_type NOT IN "
+         f"('narrative','table_structure','both'))=0 AS ok, "
+         f"COUNTIF(evidence_type NOT IN "
+         f"('narrative','table_structure','both')) AS bad FROM `{table_id}`"),
+        ("exactly 5 requirements per standard",
+         f"SELECT LOGICAL_AND(n = 5) AS ok, COUNT(*) AS standards FROM "
+         f"(SELECT standard_code, COUNT(*) AS n FROM `{table_id}` "
+         f"GROUP BY standard_code)"),
+        ("(standard_code, req) is unique",
+         f"SELECT COUNT(*) = COUNT(DISTINCT FORMAT('%s|%s', standard_code, req)) "
+         f"AS ok FROM `{table_id}`"),
+        # Bronze enforces no relationships, but an orphan here means the two
+        # files disagree about which standards exist — worth failing on.
+        ("every standard_code resolves to bronze_ifrs_standard_raw",
+         f"SELECT COUNTIF(s.standard_code IS NULL)=0 AS ok, "
+         f"COUNTIF(s.standard_code IS NULL) AS orphans "
+         f"FROM `{table_id}` r LEFT JOIN `{std_table}` s USING (standard_code)"),
     ]
     return _run_checks(client, checks)
 
@@ -211,6 +252,17 @@ def push_one(client, name: str, module, config_file: str, args) -> bool:
         ok &= verify_coa(client, table_id)
     elif name == "bronze_group_tb_raw":
         ok &= verify_tb_like(client, table_id, "account")
+    elif name == "bronze_ifrs_rubric_raw":
+        ok &= verify_reference(client, table_id,
+                               ["standard", "req", "requirement", "standard_code"])
+        ok &= verify_rubric(client, table_id)
+    elif name == "bronze_ifrs_standard_raw":
+        ok &= verify_reference(client, table_id,
+                               ["standard_code", "standard_title",
+                                "disclosure_summary"])
+    elif name == "bronze_entity_context_raw":
+        ok &= verify_reference(client, table_id, ["context_key", "context_value"])
+        ok &= verify_unique(client, table_id, "context_key")
     elif name == "bronze_checklist_raw":
         ok &= verify_reference(client, table_id, ["item", "document"])
     print("Done." if ok else "Loaded, but a verification check FAILED.")

@@ -12,9 +12,9 @@ Generalized from a single CoA-only schema to a registry (BRONZE_TABLES) so
 the same bq_schema()/ensure_table()/load helpers serve every bronze table
 this package owns instead of being re-hardcoded per table.
 
-Affiliate trial balance and the CSV-sourced tables (ifrs standard/rubric,
-entity context) are ingested elsewhere and are not defined here. The Group
-(parent-only) trial balance, bronze_group_tb_raw, is owned by this package.
+Affiliate trial balance (bronze_tb_raw) is owned by another developer and
+is not defined here. Everything else — coa, group_tb, ifrs standard/rubric,
+entity context, checklist — is owned by this package.
 """
 
 from __future__ import annotations
@@ -109,6 +109,66 @@ _GROUP_TB_COLUMNS, _GROUP_TB_DESCRIPTIONS = with_source_file(
     },
 )
 
+_IFRS_STANDARD_COLUMNS, _IFRS_STANDARD_DESCRIPTIONS = with_source_file(
+    ["standard_code", "standard_title", "disclosure_summary"],
+    {
+        "standard_code":
+            "Short stable code: 'IFRS 15', 'IAS 24', 'IAS 16'. Primary key, "
+            "and the value bronze_ifrs_rubric_raw.standard_code joins to.",
+        "standard_title":
+            "Full official title, e.g. 'IFRS 15 Revenue from Contracts with "
+            "Customers'.",
+        "disclosure_summary":
+            "Paragraph summarising what the standard requires to be "
+            "disclosed. Held once per standard rather than repeated across "
+            "its five requirement rows.",
+    },
+)
+
+_IFRS_RUBRIC_COLUMNS, _IFRS_RUBRIC_DESCRIPTIONS = with_source_file(
+    ["standard", "req", "requirement", "standard_code", "evidence_type",
+     "check_guidance"],
+    {
+        "standard":
+            "The IFRS/IAS standard's full name, e.g. 'IFRS 15 Revenue', "
+            "'IAS 24 Related party', 'IAS 16 PP&E'. A descriptive attribute — "
+            "join on standard_code, not on this.",
+        "req":
+            "Requirement code within the standard, R1..R5.",
+        "requirement":
+            "The disclosure requirement text. Agent 4 (Disclosure Drafting) "
+            "reference data — this is what a note is scored AGAINST, not "
+            "financial data itself.",
+        "standard_code":
+            "Short stable code for the standard: 'IFRS 15', 'IAS 24', "
+            "'IAS 16'. Joins to bronze_ifrs_standard_raw.standard_code. "
+            "Preferred over the full name as a key because a standard can be "
+            "retitled but its code will not change.",
+        "evidence_type":
+            "What kind of evidence satisfies this requirement: 'narrative' "
+            "(prose in the note), 'table_structure' (the shape of a table), "
+            "or 'both'. Lets the disclosure agent decide whether to inspect "
+            "wording or table columns.",
+        "check_guidance":
+            "The explicit rule for what counts as meeting this requirement, "
+            "e.g. 'Revenue table must break down revenue into product "
+            "categories, not only a total.' This is what makes the rubric "
+            "machine-actionable rather than just a list of topics.",
+    },
+)
+
+_ENTITY_CONTEXT_COLUMNS, _ENTITY_CONTEXT_DESCRIPTIONS = with_source_file(
+    ["context_key", "context_value"],
+    {
+        "context_key":
+            "Metadata key, e.g. 'reporting_entity', 'presentation_currency', "
+            "'reportable_segments', 'negative_convention'. Primary key.",
+        "context_value":
+            "Free-text value. Narrative reference an agent reads to ground a "
+            "disclosure or interpret a figure — never aggregated, never cast.",
+    },
+)
+
 _CHECKLIST_COLUMNS, _CHECKLIST_DESCRIPTIONS = with_source_file(
     ["item", "document", "required", "applies_to", "expected_format",
      "description"],
@@ -163,6 +223,45 @@ BRONZE_TABLES = {
             "dividers, verified redundant with category). Refuses to land "
             "unless every period column proves to nil. All columns STRING. "
             "SYNTHETIC data."
+        ),
+    },
+    "bronze_ifrs_standard_raw": {
+        "columns": _IFRS_STANDARD_COLUMNS,
+        "descriptions": _IFRS_STANDARD_DESCRIPTIONS,
+        "table_description": (
+            "One row per IFRS/IAS standard in scope — the standard-level "
+            "parent of bronze_ifrs_rubric_raw. 3 rows: IFRS 15, IAS 24, "
+            "IAS 16. Separate from the rubric because disclosure_summary is "
+            "a paragraph with only three distinct values, and repeating it "
+            "across five requirement rows per standard invites drift."
+        ),
+    },
+    "bronze_ifrs_rubric_raw": {
+        "columns": _IFRS_RUBRIC_COLUMNS,
+        "descriptions": _IFRS_RUBRIC_DESCRIPTIONS,
+        "table_description": (
+            "IFRS disclosure requirements rubric — Agent 4 (Disclosure "
+            "Drafting) reference data. 15 rows = 3 standards x 5 "
+            "requirements. Sourced from ifrs_requirements_updated.csv; the "
+            "'Compliant version'/'Gap version'/'Gap detail' columns of the "
+            "original workbook are the demo answer key and remain "
+            "deliberately excluded. evidence_type and check_guidance make "
+            "the rubric machine-actionable. standard_code joins to "
+            "bronze_ifrs_standard_raw."
+        ),
+    },
+    "bronze_entity_context_raw": {
+        "columns": _ENTITY_CONTEXT_COLUMNS,
+        "descriptions": _ENTITY_CONTEXT_DESCRIPTIONS,
+        "table_description": (
+            "Reporting-entity metadata as key-value pairs: entity, period, "
+            "currency, units, segments, reporting framework, sign "
+            "convention. 13 rows. Deliberately key-value (EAV) shaped "
+            "because the attributes are open-ended narrative, there is "
+            "exactly one entity described, and the consumer is an agent "
+            "reading prose rather than a tool aggregating a measure. Source: "
+            "entity_context (1).csv — a shorter 10-key file of the same name "
+            "exists and is NOT the authoritative one."
         ),
     },
     "bronze_checklist_raw": {

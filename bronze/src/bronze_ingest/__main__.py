@@ -10,11 +10,9 @@ independently: a bad control total or nil-proof in one table stops that
 table's write and is reported, but does not prevent the others from
 landing.
 
-Affiliate trial balance (bronze_tb_raw) and the CSV-sourced tables
-(bronze_ifrs_standard_raw, bronze_ifrs_rubric_raw, bronze_entity_context_raw)
-are owned/ingested elsewhere and are not part of this package — see
-trial_balance/ at the repo root for affiliate trial balance. The Group
-(parent-only) trial balance, bronze_group_tb_raw, is owned by this package.
+Affiliate trial balance (bronze_tb_raw) is owned by another developer —
+see trial_balance/ at the repo root. Everything else is owned by this
+package.
 """
 
 from __future__ import annotations
@@ -24,7 +22,8 @@ import json
 import sys
 from pathlib import Path
 
-from . import checklist, coa, group_tb
+from . import (checklist, coa, entity_context, group_tb, ifrs_rubric,
+               ifrs_standard)
 from .excel import IngestError
 from .sink import write_csv
 
@@ -37,6 +36,12 @@ CONFIG_DIR = ROOT / "configs"
 TABLES = [
     ("bronze_coa_raw",           coa,             "bronze_coa.json"),
     ("bronze_group_tb_raw",      group_tb,        "bronze_group_tb.json"),
+    # ifrs_standard BEFORE ifrs_rubric: the rubric's post-load verification
+    # checks that every standard_code resolves to the standard table, so the
+    # parent has to exist first on a cold run.
+    ("bronze_ifrs_standard_raw", ifrs_standard,   "bronze_ifrs_standard.json"),
+    ("bronze_ifrs_rubric_raw",   ifrs_rubric,     "bronze_ifrs_rubric.json"),
+    ("bronze_entity_context_raw", entity_context, "bronze_entity_context.json"),
     ("bronze_checklist_raw",     checklist,       "bronze_checklist.json"),
 ]
 
@@ -71,7 +76,7 @@ def run_one(name: str, module, cfg: dict, dry_run: bool) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(
         prog="bronze-ingest",
-        description="Excel data pack -> bronze CSVs (coa, group_tb, checklist)")
+        description="Excel/CSV data -> bronze CSVs (all tables this package owns)")
     ap.add_argument("--config-dir", type=Path, default=CONFIG_DIR)
     ap.add_argument("--dry-run", action="store_true",
                     help="run the checks, write nothing")
