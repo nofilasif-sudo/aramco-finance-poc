@@ -1,0 +1,13 @@
+{
+  "input_path": "data/PoC_Group_Trial_Balance_Aramco.xlsx",
+  "output_dir": "outputs",
+  "output_file": "bronze_group_tb_raw.csv",
+
+  "header_sentinel": "account",
+
+  "drop_section_rows": true,
+  "csv_encoding": "utf-8",
+
+  "nil_abs_tolerance": 0.01,
+  "nil_rel_tolerance": 1e-9
+}

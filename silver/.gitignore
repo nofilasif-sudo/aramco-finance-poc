@@ -1,0 +1,8 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# One-off tooling, not part of the pipeline itself - kept locally, not in
+# the PR.
+scripts/export_ddl.py
+scripts/validate_staging.py

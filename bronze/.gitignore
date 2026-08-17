@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Generated data - bronze is rebuildable from the source workbook, so it is
+# an output, not a source. Committing it invites someone to edit the CSV
+# instead of the pipeline.
+outputs/
+
+# Source workbooks. The pack is SYNTHETIC but client-shaped; keep it out of
+# git and share it through the agreed channel.
+data/
+*.xlsx
+
+# Credentials. A service account key in a repo is the one mistake that cannot
+# be undone by deleting it later - the key has to be rotated. Prefer
+# Application Default Credentials (`gcloud auth application-default login`)
+# and keep any key file outside the project directory entirely.
+*.json
+!configs/*.json
+*-key.json
+credentials*.json
+service-account*.json
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# One-off tooling, not part of the pipeline itself - kept locally, not in
+# the PR. Re-run manually if you need to re-baseline sql/*.sql from a live
+# table's schema.
+scripts/export_ddl.py

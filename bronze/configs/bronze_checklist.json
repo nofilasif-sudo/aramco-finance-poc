@@ -1,0 +1,8 @@
+{
+  "input_path": "data/PoC_Submission_Validator.xlsx",
+  "output_dir": "outputs",
+  "output_file": "bronze_checklist_raw.csv",
+
+  "header_sentinel": "item",
+  "csv_encoding": "utf-8"
+}

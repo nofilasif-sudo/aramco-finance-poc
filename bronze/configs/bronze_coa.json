@@ -1,0 +1,12 @@
+{
+  "input_path": "data/PoC_Charts_of_Accounts (1).xlsx",
+  "output_dir": "outputs",
+  "output_file": "bronze_coa_raw.csv",
+
+  "header_sentinel": "account",
+  "affiliate_pattern": "\\((\\d{4})\\)",
+  "group_marker": "group",
+
+  "drop_section_rows": true,
+  "csv_encoding": "utf-8"
+}
