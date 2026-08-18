@@ -1,0 +1,19 @@
+# Runtime. python-docx is the only dependency - the pipeline reads .docx and
+# writes CSV with the standard library.
+#
+# Why a dependency at all, when bronze_ingest gets by on openpyxl alone and
+# .docx is just a zip of XML: bold. Word writes a non-bold run as an explicit
+# <w:b w:val="0"/>, so a hand-rolled parser that tests for the tag's presence
+# marks every row bold and silently destroys subtotal detection. python-docx
+# models bold as a proper tri-state (True/False/None) and is ~250KB. That is
+# a fair price for not hand-rolling the one thing this pipeline cannot get
+# wrong.
+python-docx>=1.1
+
+# Cloud publishing (scripts/push_to_bq.py) only. The package itself stays
+# importable and fully testable without these - cloud.py imports them inside
+# its functions - so the test suite runs offline.
+#   pip install google-cloud-bigquery google-cloud-storage
+
+# Tests use the standard library only (unittest), so nothing extra is needed:
+#   python -m unittest discover -s tests
