@@ -23,6 +23,15 @@ data/
 credentials*.json
 service-account*.json
 
+# One-off analysis tooling, not part of the pipeline itself - kept locally,
+# not in the PR. Same policy as bronze/scripts/export_ddl.py. These three
+# exist to settle whether the section/subsection hierarchy can be derived
+# from bold alone instead of declared in configs/fs_*.json; they import the
+# package read-only and change nothing.
+scripts/auto_extract.py
+scripts/band_experiment.py
+scripts/dump_auto_csv.py
+
 # Editors / OS
 .vscode/
 .idea/
