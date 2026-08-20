@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fs-ingest"
+version = "0.1.0"
+description = "Aramco FC&RD PoC - Group financial statements (.docx) to bronze"
+requires-python = ">=3.10"
+dependencies = ["python-docx>=1.1"]
+
+# Installs an `fs-ingest` command on PATH that calls main().
+[project.scripts]
+fs-ingest = "fs_ingest.__main__:main"
+
+# The src layout: setuptools looks for packages under src/, not the repo root.
+# This is what removes the need for sys.path hacks - after `pip install -e .`
+# the package resolves from anywhere, including notebooks and tests.
+[tool.setuptools.packages.find]
+where = ["src"]

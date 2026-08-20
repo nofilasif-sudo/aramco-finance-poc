@@ -1,0 +1,110 @@
+{
+  "input_path": "data/PoC_Group_FS_clean.docx",
+  "output_dir": "outputs",
+  "output_file": "fs_clean.csv",
+  "csv_encoding": "utf-8",
+
+  "_comment_statements": [
+    "The statements this document is expected to hold, in printed order.",
+    "Keys are the heading VERBATIM - note the em dash (U+2014) in the note",
+    "headings, not a hyphen. A mismatch fails the load rather than landing",
+    "rows under a heading nobody expected.",
+    "",
+    "`sections` / `subsections` are DERIVED - the pages do not print them",
+    "consistently. The balance sheet prints 'Equity and liabilities' as a",
+    "header row but never prints 'Assets' or 'Equity' at all, and the income",
+    "statement prints no group headers whatsoever; its groups are inferable",
+    "only backwards, from a trailing subtotal. Declaring the ranges by label",
+    "keeps that inference in a file a reviewer can hold against the printed",
+    "page, instead of inside a heuristic. Every anchor is checked to resolve",
+    "exactly once.",
+    "",
+    "`top_level` forces a line out of the hierarchy: Total assets sums",
+    "across both subsections of the assets half rather than belonging to",
+    "either.",
+    "",
+    "`column_labels` overrides the printed header. Notes 5, 7 and 10 print",
+    "'SAR million' over their single value column and inherit the period of",
+    "the face statement they support - 31 Mar 2026 for the position note,",
+    "Q1 2026 for the flow notes. Note 9 is left alone: its three columns are",
+    "a breakdown axis, not a period."
+  ],
+
+  "statements": {
+    "Consolidated statement of income": {
+      "sections": [
+        {
+          "name": "Revenue and other income related to sales",
+          "from": "Revenue (Note 10)",
+          "to": "Revenue and other income related to sales"
+        },
+        {
+          "name": "Operating costs",
+          "from": "Royalties and other taxes",
+          "to": "Operating costs"
+        }
+      ]
+    },
+
+    "Consolidated balance sheet": {
+      "sections": [
+        {
+          "name": "Assets",
+          "from": "Non-current assets",
+          "to": "Total current assets"
+        },
+        {
+          "name": "Equity and liabilities",
+          "from": "Equity and liabilities",
+          "to": "Total current liabilities"
+        }
+      ],
+      "subsections": [
+        {
+          "name": "Non-current assets",
+          "from": "Non-current assets",
+          "to": "Total non-current assets"
+        },
+        {
+          "name": "Current assets",
+          "from": "Current assets",
+          "to": "Total current assets"
+        },
+        {
+          "name": "Equity",
+          "from": "Share capital",
+          "to": "Total equity"
+        },
+        {
+          "name": "Non-current liabilities",
+          "from": "Non-current liabilities",
+          "to": "Total non-current liabilities"
+        },
+        {
+          "name": "Current liabilities",
+          "from": "Current liabilities",
+          "to": "Total current liabilities"
+        }
+      ],
+      "top_level": [
+        "Total assets",
+        "Total liabilities",
+        "Total equity and liabilities"
+      ]
+    },
+
+    "Note 5 — Property, plant and equipment": {
+      "column_labels": ["31 Mar 2026"]
+    },
+
+    "Note 7 — Income taxes and zakat": {
+      "column_labels": ["Q1 2026"]
+    },
+
+    "Note 9 — Borrowings": {},
+
+    "Note 10 — Revenue": {
+      "column_labels": ["Q1 2026"]
+    }
+  }
+}
