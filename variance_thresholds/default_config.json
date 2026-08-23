@@ -1,0 +1,58 @@
+{
+  "gcp_project": "aramco-finance-poc-c2a4",
+  "log_level": "INFO",
+  "write_disposition": "WRITE_TRUNCATE",
+
+  "input_path": "",
+  "input_prefix": "gs://aramco-finance-poc-raw-landing/variance_thresholds/",
+  "input_file_pattern": "*.xlsx",
+
+  "output_mode": "bigquery",
+  "output_dir": "outputs",
+
+  "bq_targets": {
+    "threshold": "aramco-finance-poc-c2a4.bronze.bronze_variance_threshold_raw",
+    "silent_account_rule": "aramco-finance-poc-c2a4.bronze.bronze_variance_silent_account_rule_raw"
+  },
+
+  "threshold_sheet_marker": "threshold",
+  "threshold_sheet_keywords": {
+    "sabic": "SABIC",
+    "petro": "Petro Rabigh",
+    "aramco": "Aramco"
+  },
+  "threshold_column_map": {
+    "account": "account",
+    "account name": "account_name",
+    "category": "category",
+    "arch.": "archetype",
+    "seasonal": "seasonal",
+    "primary basis": "primary_basis",
+    "qoq low": "qoq_low",
+    "qoq med": "qoq_med",
+    "qoq high": "qoq_high",
+    "yoy low": "yoy_low",
+    "yoy med": "yoy_med",
+    "yoy high": "yoy_high",
+    "abs floor": "abs_floor",
+    "large-$ override": "large_dollar_override",
+    "notes": "notes"
+  },
+  "threshold_numeric_columns": [
+    "qoq_low", "qoq_med", "qoq_high", "yoy_low", "yoy_med", "yoy_high",
+    "abs_floor", "large_dollar_override"
+  ],
+
+  "silent_account_rule_sheet": "Silent-account rules",
+  "silent_account_rule_column_map": {
+    "rule": "rule_code",
+    "account(s)": "accounts",
+    "affiliate codes": "affiliate_codes",
+    "group node(s)": "group_nodes",
+    "expected cadence": "expected_cadence",
+    "expected movement": "expected_movement",
+    "flag when (silent condition)": "flag_when",
+    "urgency": "urgency",
+    "likely cause": "likely_cause"
+  }
+}
