@@ -22,8 +22,8 @@ import json
 import sys
 from pathlib import Path
 
-from . import (checklist, coa, coa_mapping, entity_context, group_tb,
-               ifrs_rubric, ifrs_standard)
+from . import (checklist, coa, coa_mapping, entity_context, fs_statements,
+               group_tb, ifrs_rubric, ifrs_standard)
 from .excel import IngestError
 from .sink import write_csv
 
@@ -43,6 +43,12 @@ TABLES = [
     ("bronze_ifrs_rubric_raw",   ifrs_rubric,     "bronze_ifrs_rubric.json"),
     ("bronze_entity_context_raw", entity_context, "bronze_entity_context.json"),
     ("bronze_checklist_raw",     checklist,       "bronze_checklist.json"),
+    # The FS pair. Named fs_clean/fs_seeded rather than bronze_fs_*_raw, and
+    # typed rather than all-STRING, per the Group FS Ingestion Notes — see
+    # fs_statements.py. One module, two configs: any difference between the
+    # two tables must come from the documents, never from two extractors.
+    ("fs_clean",                 fs_statements,   "fs_clean.json"),
+    ("fs_seeded",                fs_statements,   "fs_seeded.json"),
     # The CoA mapping pair — Agent 3's affiliate-account-to-Group-node
     # mapping. One module, two configs, same reasoning as the FS pair: one
     # table per affiliate, and any difference between them must come from the

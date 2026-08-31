@@ -1,0 +1,11 @@
+{
+  "input_path": "data/PoC_Group_FS_seeded.csv",
+  "output_dir": "outputs",
+  "output_file": "fs_seeded.csv",
+
+  "doc_version": "seeded",
+  "expected_rows": 142,
+
+  "csv_read_encoding": "utf-8-sig",
+  "csv_encoding": "utf-8"
+}

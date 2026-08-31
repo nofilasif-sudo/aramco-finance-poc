@@ -30,7 +30,8 @@ Group by-nature chart has no discontinued-operations caption, and surfacing
 that is the point of the demo. So nothing here refuses to land on a low score,
 a blank group_node, or a status the sheet disagrees with. Checks are
 STRUCTURAL only (did we read the tab correctly) plus the sheet's own triage
-control total, which validates OUR PARSE rather than the data.
+control total, which validates OUR PARSE rather than the data. Same posture as
+fs_statements.py, arrived at for the same reason.
 
 Expected against the current pack: 66 rows SABIC, 44 rows Petro Rabigh.
 """

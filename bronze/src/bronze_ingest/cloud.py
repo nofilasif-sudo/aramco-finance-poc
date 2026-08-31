@@ -199,11 +199,264 @@ _CHECKLIST_COLUMNS, _CHECKLIST_DESCRIPTIONS = with_source_file(
     },
 )
 
+# ---------------------------------------------------------------------------
+# fs_clean / fs_seeded — the Group financial statements pair.
+#
+# THREE DELIBERATE DIVERGENCES from every other table in this registry, all
+# ruled by the Group FS Ingestion Notes rather than by repo convention:
+#
+#   1. NO source_file COLUMN — note the absence of with_source_file() below,
+#      which every other spec here uses. The table name and doc_version both
+#      already identify the document.
+#   2. TYPED, not all-STRING — see _FS_TYPES. The only non-STRING columns in
+#      bronze.
+#   3. THE NAMES ARE fs_clean / fs_seeded, not bronze_fs_*_raw.
+#
+# Source is Lynn's flat extract, already one row per line item per column, so
+# there is nothing to melt or derive — see fs_statements.py.
+# ---------------------------------------------------------------------------
+_FS_COLUMNS = ["doc_version", "statement", "section", "line_order",
+               "line_item", "note_ref", "line_role", "column_label",
+               "amount", "amount_unit"]
+
+# STRING unless named here. note_ref stays STRING on purpose: it is an
+# identifier compared only for equality, never summed, and a future '9a'
+# would not need a schema change.
+_FS_TYPES = {"line_order": "INT64", "amount": "NUMERIC"}
+
+_FS_DESCRIPTIONS = {
+    "doc_version":
+        "Which source document this row came from — 'clean' in fs_clean, "
+        "'seeded' in fs_seeded. CONSTANT within each table, so it selects "
+        "nothing as a filter; it exists so the two can be UNION ALL'd into "
+        "one result set and still be told apart.",
+    "statement":
+        "Which statement or note the row belongs to, as a SNAKE_CASE KEY, "
+        "not a printed heading: 'income_statement', 'balance_sheet', "
+        "'note_05_ppe', 'note_07_tax', 'note_09_borrowings', "
+        "'note_10_revenue'. Exactly 6 values. The grouping key of the whole "
+        "model — cluster on it. Notes are values in this column rather than "
+        "separate tables, so a note's internal arithmetic is checked by the "
+        "same logic as a face statement, and adding a cash flow statement "
+        "later is an insert rather than a schema change.",
+    "section":
+        "The grouping band within the statement, e.g. 'Non-current assets', "
+        "'Current liabilities', 'Equity and liabilities'. 13 distinct "
+        "values, NEVER NULL: income statement rows all read 'Income "
+        "statement' and each note's rows read that note's title. Rows that "
+        "total ACROSS bands carry the band they conclude ('Assets' for Total "
+        "assets), so summing every 'item' inside one section is well defined.",
+    "line_order":
+        "Presentation order within a statement, from 1, contiguous with no "
+        "gaps. It is the line's position on the PAGE, not the row's position "
+        "in this table, so it REPEATS once per column — Inventories appears "
+        "twice at line_order 9, once per period. The natural key is "
+        "(statement, line_order, column_label); BigQuery enforces no key, so "
+        "ingest checks it.",
+    "line_item":
+        "The line item description, verbatim, e.g. 'Cash and cash "
+        "equivalents'. Never empty. NOT unique and NOT a safe join key: "
+        "'Other assets and receivables', 'Post-employment benefits', "
+        "'Investments in securities' and 'Borrowings' each appear under both "
+        "a non-current and a current section. The note reference is NOT part "
+        "of this text — it lives in note_ref.",
+    "note_ref":
+        "The note this line cross-references, as the bare number ('5', '7', "
+        "'9', '10'). NULL on the 126 of 142 rows that print no reference — "
+        "one of the few genuine NULLs in bronze. STRING, not INT64: it is "
+        "compared for equality, never summed. A WRONG value here is a real "
+        "finding that carries no arithmetic signal, so no footing check will "
+        "ever surface it — see fs_seeded's table description.",
+    "line_role":
+        "What the line does arithmetically: 'item' (a component), 'subtotal' "
+        "(sums the items above it within a section) or 'total' (concludes "
+        "the statement or sums across sections). LOAD-BEARING: totals sit in "
+        "the same table as their components, so an unguarded SUM(amount) "
+        "double-counts — filter to line_role = 'item' to sum. The line_item "
+        "text will not save you: most totals here do not contain the word "
+        "'Total' (Operating income, Net income, Cost - closing, Net book "
+        "value, External revenue).",
+    "column_label":
+        "The column header, verbatim. 8 distinct values. DO NOT treat the "
+        "second column as comparable across statements: the income statement "
+        "compares 'Q1 2026' to 'Q1 2025' (a prior-year quarter), the balance "
+        "sheet compares '31 Mar 2026' to '31 Dec 2025' (a prior year end). "
+        "Match on the literal string, never on column position. Two "
+        "exceptions: Note 9 uses 'Non-current'/'Current'/'Total', a "
+        "breakdown axis rather than a period, which is why this is not "
+        "called period_label; and Notes 5, 7 and 10 are single-column and "
+        "print the literal 'SAR million' here.",
+    "amount":
+        "The figure, as NUMERIC — never FLOAT64. Footing checks run at zero "
+        "tolerance and binary floating point manufactures breaks that are "
+        "not in the document. SIGNED AS PRESENTED: figures printed in "
+        "parentheses in the source document are stored NEGATIVE (29 of 142 "
+        "rows), so costs, treasury shares and accumulated depreciation are "
+        "negative and every subtotal sums with a plain SUM and no per-section "
+        "sign rules. Never NULL.",
+    "amount_unit":
+        "The unit of amount. CONSTANT 'SAR million' for every row, so it is "
+        "useless as a filter or GROUP BY key; it is carried so the figures "
+        "are never read as riyals. Unrelated to column_label also reading "
+        "'SAR million' on Notes 5, 7 and 10, where that is the note's single "
+        "column HEADER.",
+}
+
+
+def _fs_table_description(which: str, extra: str) -> str:
+    return (
+        f"Saudi Aramco Group condensed consolidated financial statements for "
+        f"Q1 2026, {which}, loaded verbatim from Lynn's flat extract. 142 "
+        f"rows = income statement 19 lines x 2 periods + balance sheet 38 x "
+        f"2 + Notes 5/7/10 7+5+7 x 1 column + Note 9 3 x 3 columns. {extra} "
+        f"TYPED, not all-STRING: amount NUMERIC, line_order INT64 — the only "
+        f"such columns in bronze, so that footing checks run at zero "
+        f"tolerance. Sum with a line_role = 'item' filter; totals and "
+        f"subtotals share the table with their components. No source_file "
+        f"column: the table name and doc_version identify the document. "
+        f"fs_clean and fs_seeded share this schema and have NO relationship "
+        f"— no join keys, no shared surrogate ids, and nothing presuming the "
+        f"two documents correspond row-for-row; the agent reads both and "
+        f"performs its own comparison. Ingest checks structure only and "
+        f"NEVER refuses to land on an arithmetic break — the breaks are the "
+        f"point. SYNTHETIC data."
+    )
+
+
+# ---------------------------------------------------------------------------
+# The CoA mapping pair — Agent 3's affiliate-account-to-Group-node mapping,
+# one table per affiliate (see coa_mapping.py for why they are not stacked).
+#
+# Built by a factory rather than written twice: the two tabs are the same BPC
+# configuration for different affiliates, so all but three descriptions are
+# word-for-word identical and two hand-maintained copies would drift.
+# ---------------------------------------------------------------------------
+_MAPPING_BASE_COLUMNS = ["affiliate_code", "affiliate_account",
+                         "affiliate_account_name", "group_node",
+                         "group_node_name", "confidence", "status",
+                         "rationale"]
+
+
+def _mapping_spec(code: str, name: str, rows: int, flagged: int,
+                  account_example: str, status_note: str,
+                  rationale_example: str) -> tuple[list[str], dict]:
+    """One affiliate's mapping columns + descriptions."""
+    return with_source_file(
+        _MAPPING_BASE_COLUMNS,
+        {
+            "affiliate_code":
+                f"The affiliate this mapping configures: constant '{code}' "
+                f"({name}) in this table. ADDED AT INGEST from the "
+                f"worksheet's title block — it is not a column in the sheet. "
+                f"Constant here, so it selects nothing as a filter; it exists "
+                f"so the two mapping tables can be UNION ALL'd and still be "
+                f"told apart, and so a row stays joinable to "
+                f"bronze_coa_raw.chart_scope and bronze_tb_raw once it leaves "
+                f"the sheet.",
+            "affiliate_account":
+                f"The affiliate's 4-digit ledger account code, e.g. '1100'. "
+                f"Unique within this table — one account maps to exactly one "
+                f"Group node in a BPC configuration. Joins to "
+                f"bronze_coa_raw.account WITH chart_scope = '{code}'; never "
+                f"join on account alone, because 2010 and 2380 share 4-digit "
+                f"codes that mean different things (1120 = plant & machinery "
+                f"for 2010 but refinery plant for 2380).",
+            "affiliate_account_name":
+                f"The affiliate's own account description, verbatim, e.g. "
+                f"'{account_example}'. The by-FUNCTION vocabulary the "
+                f"affiliate books in — this is the text the mapping had to "
+                f"reconcile against the Group's by-NATURE captions.",
+            "group_node":
+                "The G-prefixed 5-digit Aramco Group node this account maps "
+                "to, e.g. 'G11000'. Joins to bronze_coa_raw.account with "
+                "chart_scope = 'GROUP', and to bronze_group_tb_raw.account. "
+                "Populated even on flagged rows — there it is the agent's "
+                "best candidate, NOT a confirmed mapping; read `status` "
+                "before trusting it.",
+            "group_node_name":
+                "The Group node NAME, e.g. 'Property, plant & equipment "
+                "(net)'. Carried alongside the code for readability; the code "
+                "is the join key.",
+            "confidence":
+                "The agent's confidence in this mapping, 0.00-1.00, as TEXT "
+                "per the bronze all-STRING contract — CAST to NUMERIC to "
+                "compare or aggregate. Drives the triage bands: >= 0.80 "
+                "auto-maps, 0.50-0.79 routes to analyst review, < 0.50 is "
+                "unmapped. Ingest verifies every row's `status` agrees with "
+                "its score, so the two can be used interchangeably.",
+            "status": status_note,
+            "rationale":
+                f"Why this row was flagged, written by the agent — e.g. "
+                f"\"{rationale_example}\" EMPTY STRING (never NULL) on rows "
+                f"that mapped cleanly; populated on {flagged} of {rows}. The "
+                f"most valuable text in the table: it names the specific "
+                f"by-function-to-by-nature judgement an analyst has to make.",
+        },
+    )
+
+
+_MAPPING_SABIC_COLUMNS, _MAPPING_SABIC_DESCRIPTIONS = _mapping_spec(
+    "2010", "SABIC", rows=66, flagged=10,
+    account_example="Cost of sales - catalysts & chemicals",
+    status_note=(
+        "Triage outcome, a closed set of exactly three values: 'Auto-mapped' "
+        "(58 rows), 'Analyst review' (7 rows), 'Unmapped - analyst "
+        "intervention' (1 row). Derived from confidence per the workbook's "
+        "stated bands. This is the column an agent filters on to find the "
+        "work queue."),
+    rationale_example=(
+        "Catalysts & chemicals: 'Producing & manufacturing' vs 'Purchases' - "
+        "classic by-function/by-nature ambiguity."))
+
+_MAPPING_RABIGH_COLUMNS, _MAPPING_RABIGH_DESCRIPTIONS = _mapping_spec(
+    "2380", "Petro Rabigh", rows=44, flagged=6,
+    account_example="Cost of sales - crude & feedstock",
+    status_note=(
+        "Triage outcome: 'Auto-mapped' (40 rows) and 'Analyst review' (4 "
+        "rows). NOTE this table has NO 'Unmapped - analyst intervention' "
+        "rows — that value is legal in the column and appears in "
+        "bronze_coa_mapping_sabic_raw; do not infer the domain from this "
+        "table alone."),
+    rationale_example=(
+        "Shareholder subordinated loan: 'Borrowings' vs related-party "
+        "financing - analyst to confirm."))
+
+
 # Table name -> (columns, descriptions, table description). One entry per
 # bronze table this package owns — the local CLI, push_to_bq.py and this
 # module's own bq_schema()/ensure_table() all key off this registry instead
 # of each hardcoding a schema.
+#
+# An entry may carry an optional "types" key; without it every column is
+# STRING, which is the bronze contract and what all six original tables use.
 BRONZE_TABLES = {
+    "fs_clean": {
+        "columns": _FS_COLUMNS,
+        "descriptions": _FS_DESCRIPTIONS,
+        "types": _FS_TYPES,
+        "table_description": _fs_table_description(
+            "the CLEAN version",
+            "Every subtotal foots and every cross-statement tie-out agrees; "
+            "this is the control against which fs_seeded is read."),
+    },
+    "fs_seeded": {
+        "columns": _FS_COLUMNS,
+        "descriptions": _FS_DESCRIPTIONS,
+        "types": _FS_TYPES,
+        "table_description": _fs_table_description(
+            "the SEEDED-ERROR version",
+            "Structurally identical to fs_clean — the defects change three "
+            "values, never the shape. THE THREE PLANTED DEFECTS: (1) Total "
+            "current assets at 31 Mar 2026 prints 683,180 where its eight "
+            "components foot to 682,760, a 420 break that also breaks the "
+            "balance sheet, since Total assets still prints 2,661,959; (2) "
+            "Revenue from contracts with customers in Note 10 prints 423,221 "
+            "where its three components foot to 423,218, a 3 break; (3) "
+            "non-current Borrowings cites note 5 where the borrowings note "
+            "is 9 — a text-only defect with no arithmetic signal, detectable "
+            "only by validating the reference against the note. Defects 1 "
+            "and 2 are in amount, defect 3 is in note_ref."),
+    },
     "bronze_coa_raw": {
         "columns": _COA_COLUMNS,
         "descriptions": _COA_DESCRIPTIONS,
@@ -338,14 +591,26 @@ BRONZE_TABLES = {
 }
 
 
-def bq_schema(columns: list[str], descriptions: dict):
-    """Columns as BigQuery STRING fields, with descriptions.
+def bq_schema(columns: list[str], descriptions: dict, types: dict | None = None):
+    """Columns as BigQuery fields, with descriptions.
 
     One definition feeds both CREATE TABLE and the load job, so a table's
     schema and the loader's schema cannot disagree.
+
+    STRING unless `types` names the column otherwise. The default is the
+    bronze contract — every value lands as text — and every table this
+    package owned before fs_clean/fs_seeded passes no `types` at all, so
+    their schemas are byte-identical to what they were.
+
+    The exception exists for the FS pair only, per the Group FS Ingestion
+    Notes: `amount` is NUMERIC and `line_order` is INT64 so that footing
+    checks downstream run at zero tolerance, which binary floating point
+    cannot do. See BRONZE_TABLES['fs_clean'].
     """
     from google.cloud import bigquery
-    return [bigquery.SchemaField(c, "STRING", description=descriptions[c])
+    types = types or {}
+    return [bigquery.SchemaField(c, types.get(c, "STRING"),
+                                 description=descriptions[c])
             for c in columns]
 
 
@@ -429,7 +694,8 @@ def ensure_table(client, table_id: str, location: str, ddl_path) -> None:
     client.query(ddl_sql, location=location).result()
 
 
-def _load_config(columns: list[str], descriptions: dict):
+def _load_config(columns: list[str], descriptions: dict,
+                 types: dict | None = None):
     """Load settings shared by the GCS and local-file paths.
 
     Three settings carry all the risk:
@@ -451,7 +717,7 @@ def _load_config(columns: list[str], descriptions: dict):
     from google.cloud import bigquery
     return bigquery.LoadJobConfig(
         source_format=bigquery.SourceFormat.CSV,
-        schema=bq_schema(columns, descriptions),
+        schema=bq_schema(columns, descriptions, types),
         skip_leading_rows=1,
         autodetect=False,
         null_marker="\\N",
@@ -460,16 +726,19 @@ def _load_config(columns: list[str], descriptions: dict):
 
 
 def load_csv_from_gcs(client, gcs_uri: str, table_id: str, location: str,
-                      columns: list[str], descriptions: dict):
+                      columns: list[str], descriptions: dict,
+                      types: dict | None = None):
     job = client.load_table_from_uri(
-        gcs_uri, table_id, job_config=_load_config(columns, descriptions),
+        gcs_uri, table_id,
+        job_config=_load_config(columns, descriptions, types),
         location=location)
     job.result()          # blocks; raises with row-level detail on failure
     return job
 
 
 def load_csv_from_memory(client, csv_text: str, table_id: str, location: str,
-                         columns: list[str], descriptions: dict):
+                         columns: list[str], descriptions: dict,
+                         types: dict | None = None):
     """Load straight from an in-memory CSV string — no local file, no bucket.
 
     csv_text never touches disk: it is encoded straight into a BytesIO
@@ -479,7 +748,7 @@ def load_csv_from_memory(client, csv_text: str, table_id: str, location: str,
     """
     buf = io.BytesIO(csv_text.encode("utf-8"))
     job = client.load_table_from_file(
-        buf, table_id, job_config=_load_config(columns, descriptions),
+        buf, table_id, job_config=_load_config(columns, descriptions, types),
         location=location)
     job.result()
     return job

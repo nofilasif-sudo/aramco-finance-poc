@@ -1,0 +1,11 @@
+{
+  "input_path": "data/PoC_Group_FS_clean.csv",
+  "output_dir": "outputs",
+  "output_file": "fs_clean.csv",
+
+  "doc_version": "clean",
+  "expected_rows": 142,
+
+  "csv_read_encoding": "utf-8-sig",
+  "csv_encoding": "utf-8"
+}
