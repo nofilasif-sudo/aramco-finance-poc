@@ -220,6 +220,58 @@ BRONZE_TABLES = {
             "SYNTHETIC data calibrated to public results; not Aramco actuals."
         ),
     },
+    "bronze_coa_mapping_sabic_raw": {
+        "columns": _MAPPING_SABIC_COLUMNS,
+        "descriptions": _MAPPING_SABIC_DESCRIPTIONS,
+        "table_description": (
+            "SABIC (affiliate 2010) chart-of-accounts mapping to Aramco Group "
+            "nodes, as configured in SAP BPC and scored by Agent 3. 66 rows, "
+            "one per affiliate account, matching the tab's own triage footer "
+            "(58 auto-mapped + 7 analyst review + 1 unmapped) exactly. All "
+            "columns STRING per the bronze contract — CAST confidence to "
+            "compare it. THE FLAGGED ROWS ARE THE DELIVERABLE, NOT A DEFECT: "
+            "ingest never refuses to land on a low score or an unmapped row, "
+            "because surfacing exactly these is the point of the demo. The "
+            "flagship case is account 8100 'Net result from discontinued "
+            "operations' at confidence 0.35 — the Group by-nature chart has "
+            "NO discontinued-operations caption, so the line cannot be mapped "
+            "and must be decomposed by an analyst. Kept as its own table "
+            "rather than stacked with Petro Rabigh because each tab is a "
+            "self-contained BPC configuration with its own control total; "
+            "UNION ALL on affiliate_code to combine them. This is the "
+            "affiliate-to-Group mapping that bronze_coa_raw's description "
+            "notes was absent from the original pack. No relationships "
+            "enforced at this layer. SYNTHETIC data calibrated to public "
+            "results; not Aramco actuals."
+        ),
+    },
+    "bronze_coa_mapping_rabigh_raw": {
+        "columns": _MAPPING_RABIGH_COLUMNS,
+        "descriptions": _MAPPING_RABIGH_DESCRIPTIONS,
+        "table_description": (
+            "Petro Rabigh (affiliate 2380) chart-of-accounts mapping to "
+            "Aramco Group nodes, as configured in SAP BPC and scored by Agent "
+            "3. 44 rows, one per affiliate account, matching the tab's own "
+            "triage footer (40 auto-mapped + 4 analyst review + 0 unmapped) "
+            "exactly. All columns STRING per the bronze contract — CAST "
+            "confidence to compare it. THE FLAGGED ROWS ARE THE DELIVERABLE, "
+            "NOT A DEFECT: ingest never refuses to land on a low score, "
+            "because surfacing exactly these is the point of the demo. The "
+            "four flagged rows are the genuine by-function-to-by-nature "
+            "judgements — catalysts & chemicals, other operating "
+            "income/expenses, and a shareholder subordinated loan that could "
+            "sit in 'Borrowings' or in related-party financing. Petro Rabigh "
+            "is a REFINERY: its chart is 22 accounts shorter than SABIC's and "
+            "carries no discontinued operations, no derivatives and no "
+            "separate income-tax line, so an account absent here is a real "
+            "difference between the affiliates rather than a dropped row. "
+            "Kept as its own table rather than stacked with SABIC because "
+            "each tab is a self-contained BPC configuration with its own "
+            "control total; UNION ALL on affiliate_code to combine them. No "
+            "relationships enforced at this layer. SYNTHETIC data calibrated "
+            "to public results; not Aramco actuals."
+        ),
+    },
     "bronze_group_tb_raw": {
         "columns": _GROUP_TB_COLUMNS,
         "descriptions": _GROUP_TB_DESCRIPTIONS,

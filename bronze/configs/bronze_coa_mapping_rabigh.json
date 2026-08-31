@@ -1,0 +1,12 @@
+{
+  "input_path": "data/PoC_CoA_Mapping.xlsx",
+  "output_dir": "outputs",
+  "output_file": "bronze_coa_mapping_rabigh_raw.csv",
+
+  "header_sentinel": "affiliate a/c",
+  "tab_marker": "Petro Rabigh",
+  "affiliate_pattern": "Affiliate\\s+(\\d{4})",
+  "expected_rows": 44,
+
+  "csv_encoding": "utf-8"
+}

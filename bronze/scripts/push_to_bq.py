@@ -75,6 +75,12 @@ EXPECTED_ROWS = {
     "bronze_ifrs_standard_raw": 3,
     "bronze_entity_context_raw": 13,
     "bronze_checklist_raw": 14,
+    # One row per affiliate account, matching each mapping tab's own triage
+    # footer. Same counts as that affiliate's chart in bronze_coa_raw (66/44),
+    # because every affiliate account is mapped — including the one that maps
+    # to nothing usable and lands as 'Unmapped - analyst intervention'.
+    "bronze_coa_mapping_sabic_raw": 66,
+    "bronze_coa_mapping_rabigh_raw": 44,
 }
 
 
@@ -221,6 +227,14 @@ def dispatch_verify(client, name: str, table_id: str, expected: int) -> bool:
         ok &= verify_unique(client, table_id, "context_key")
     elif name == "bronze_checklist_raw":
         ok &= verify_reference(client, table_id, ["item", "document"])
+    elif name == "bronze_coa_mapping_sabic_raw":
+        ok &= verify_coa_mapping(client, table_id, "2010",
+                                 {"Auto-mapped": 58, "Analyst review": 7,
+                                  "Unmapped - analyst intervention": 1})
+    elif name == "bronze_coa_mapping_rabigh_raw":
+        ok &= verify_coa_mapping(client, table_id, "2380",
+                                 {"Auto-mapped": 40, "Analyst review": 4,
+                                  "Unmapped - analyst intervention": 0})
     return ok
 
 
@@ -230,7 +244,8 @@ def create_one(client, name: str, module, config_file: str, args) -> TableState:
     print(f"\n=== {name} ===")
     spec = cloud.BRONZE_TABLES[name]
     state = TableState(name=name, table_id=f"{PROJECT}.{DATASET}.{name}",
-                       columns=spec["columns"], descriptions=spec["descriptions"])
+                       columns=spec["columns"],
+                       descriptions=spec["descriptions"])
 
     try:
         cfg = load_config(ROOT / "configs" / config_file)

@@ -7,16 +7,34 @@ as local CSVs (`python -m bronze_ingest`) or straight into BigQuery
 
 ## Scope
 
-This package owns 6 of the 7 bronze tables in the project:
+This package owns every bronze table in the project except one:
 
-| Table | Source | Format |
-|---|---|---|
-| `bronze_coa_raw` | `PoC_Charts_of_Accounts (1).xlsx` | xlsx |
-| `bronze_group_tb_raw` | `PoC_Group_Trial_Balance_Aramco.xlsx` | xlsx |
-| `bronze_checklist_raw` | `PoC_Submission_Validator.xlsx` | xlsx |
-| `bronze_ifrs_standard_raw` | `ifrs_standard_context.csv` | csv |
-| `bronze_ifrs_rubric_raw` | `ifrs_requirements_updated.csv` | csv |
-| `bronze_entity_context_raw` | `entity_context (1).csv` | csv |
+| Table | Source | Format | Rows |
+|---|---|---|---|
+| `bronze_coa_raw` | `PoC_Charts_of_Accounts (1).xlsx` | xlsx | 188 |
+| `bronze_group_tb_raw` | `PoC_Group_Trial_Balance_Aramco.xlsx` | xlsx | 531 |
+| `bronze_checklist_raw` | `PoC_Submission_Validator.xlsx` | xlsx | 14 |
+| `bronze_ifrs_standard_raw` | `ifrs_standard_context.csv` | csv | 3 |
+| `bronze_ifrs_rubric_raw` | `ifrs_requirements_updated.csv` | csv | 15 |
+| `bronze_entity_context_raw` | `entity_context (1).csv` | csv | 13 |
+| `bronze_coa_mapping_sabic_raw` | `PoC_CoA_Mapping.xlsx` (tab `Mapping - SABIC`) | xlsx | 66 |
+| `bronze_coa_mapping_rabigh_raw` | `PoC_CoA_Mapping.xlsx` (tab `Mapping - Petro Rabigh`) | xlsx | 44 |
+
+**`bronze_coa_mapping_*_raw`** (`coa_mapping.py`) — Agent 3's
+affiliate-account-to-Group-node mapping with confidence scores. The two
+tables share one extractor module and differ only by config, so that any
+difference between them comes from the **workbook**, never from two
+extractors that drifted apart. One table per affiliate rather than one
+stacked table, because each tab is a self-contained SAP BPC configuration
+with its own triage control total; `UNION ALL` on `affiliate_code` to
+combine them.
+
+This pair inverts the package's usual fail-closed rule: **it must not refuse
+to land on a data defect**, because the defects are the deliverable — the
+mapping's low-confidence and unmapped rows are exactly what the PoC exists to
+surface. Its ingest-time checks are structural only ("did we read the tab
+correctly") plus the sheet's own triage control total, and every judgement is
+left to silver or to an analyst.
 
 **`bronze_tb_raw`** (affiliate trial balance) is **not** part of this
 package — it's owned by another developer's `trial_balance/` pipeline at
@@ -42,6 +60,9 @@ bronze/
 │   │   checklist.py, ifrs_standard.py,  schema, column aliases, and fail-closed
 │   │   ifrs_rubric.py,                  reconciliation checks (control totals /
 │   │   entity_context.py                nil-proofs). extract(path, cfg, report) -> rows
+│   ├── coa_mapping.py                 the mapping PAIR — one module, two configs.
+│   │                                    Structural checks only: must not refuse to
+│   │                                    land on a data defect (see Scope).
 │   ├── sink.py                        shared CSV renderer, used by both the local CLI
 │   │                                   and push_to_bq.py
 │   └── cloud.py                       GCS + BigQuery adapters: ensure_table() (applies

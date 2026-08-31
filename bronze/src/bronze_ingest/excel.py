@@ -112,6 +112,10 @@ class Table:
     def __init__(self, title: str, rows: list[tuple], sentinel: str):
         self.title = title
         self.header_idx = self._find_header(rows, sentinel)
+        # The title block above the header. Kept rather than discarded because
+        # it is sometimes the ONLY place a fact appears — the CoA mapping tabs
+        # state the affiliate's 4-digit code there and nowhere else.
+        self.title_block = list(rows[:self.header_idx])
         self.raw_headers = list(rows[self.header_idx])
         self.headers = [norm_header(c) for c in self.raw_headers]
 
@@ -136,6 +140,15 @@ class Table:
 
     def footer_text(self) -> str:
         return " ".join(to_raw_str(c) for row in self.footer
+                        for c in row if c is not None).strip()
+
+    def title_text(self) -> str:
+        """The title block flattened to one string, for pattern matching.
+
+        Symmetric with footer_text(): the same "the fact is somewhere in this
+        region, not in a known cell" problem, at the other end of the table.
+        """
+        return " ".join(to_raw_str(c) for row in self.title_block
                         for c in row if c is not None).strip()
 
     @staticmethod
